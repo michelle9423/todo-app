@@ -49,8 +49,7 @@ function sortItems(items) {
   });
 }
 
-// ── Login Screen ──────────────────────────────────────────────────────
-function LoginScreen({ onLogin }) {
+function LoginScreen() {
   const [loading, setLoading] = useState(false);
   const handleLogin = async () => {
     setLoading(true);
@@ -69,9 +68,8 @@ function LoginScreen({ onLogin }) {
           padding:"12px 24px", borderRadius:12, border:"1.5px solid #ede9e4",
           background:"white", cursor:loading?"not-allowed":"pointer",
           fontSize:15, fontWeight:600, color:"#3a3530",
-          boxShadow:"0 2px 12px rgba(0,0,0,0.08)", transition:"all 0.2s",
-          fontFamily:"'Noto Sans TC',sans-serif",
-          opacity: loading ? 0.7 : 1,
+          boxShadow:"0 2px 12px rgba(0,0,0,0.08)",
+          fontFamily:"'Noto Sans TC',sans-serif", opacity:loading?0.7:1,
         }}>
           <svg width="20" height="20" viewBox="0 0 48 48">
             <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
@@ -86,19 +84,18 @@ function LoginScreen({ onLogin }) {
   );
 }
 
-// ── Calendar ──────────────────────────────────────────────────────────
 function Calendar({ todos, activeKey, onSelectDay }) {
   const [curYear, setCurYear]   = useState(new Date().getFullYear());
   const [curMonth, setCurMonth] = useState(new Date().getMonth());
   const [selected, setSelected] = useState(null);
-  const today  = TODAY();
+  const today = TODAY();
   const firstDay    = new Date(curYear, curMonth, 1).getDay();
   const daysInMonth = new Date(curYear, curMonth + 1, 0).getDate();
   const accent = MORANDI[activeKey];
   const dMap = {};
   const addToMap = (date, item, cat) => {
     if (!date) return;
-    if (!dMap[date]) dMap[date] = { work: [], study: [], : [] };
+    if (!dMap[date]) dMap[date] = { work: [], study: [], house: [] };
     dMap[date][cat].push(item);
   };
   PERIOD_KEYS.forEach(k => {
@@ -143,11 +140,11 @@ function Calendar({ todos, activeKey, onSelectDay }) {
           const isSel   = ds === selected;
           const hasWork  = day?.work?.some(t => !t.done && !t.subtasks?.every(s=>s.done));
           const hasStudy = day?.study?.some(t => !t.done && !t.subtasks?.every(s=>s.done));
-          const has = day?.house?.some(t => !t.done && !t.subtasks?.every(s=>s.done));
+          const hasHouse = day?.house?.some(t => !t.done && !t.subtasks?.every(s=>s.done));
           const hasAny   = day && Object.values(day).flat().length > 0;
           const allDone  = hasAny && Object.values(day).flat().every(t => t.done || t.subtasks?.every(s=>s.done));
           return (
-            <div key={i} onClick={() => handleDay(d)} style={{ textAlign:"center", padding:"6px 2px 8px", borderRadius:10, cursor:"pointer", background: isSel?accent.main: isToday?accent.light:"transparent", transition:"background 0.15s" }}>
+            <div key={i} onClick={() => handleDay(d)} style={{ textAlign:"center", padding:"6px 2px 8px", borderRadius:10, cursor:"pointer", background:isSel?accent.main:isToday?accent.light:"transparent", transition:"background 0.15s" }}>
               <span style={{ fontSize:13, fontWeight:isToday?700:400, color:isSel?"white":isToday?accent.text:"#4a4540" }}>{d}</span>
               {hasAny && (
                 <div style={{ display:"flex", justifyContent:"center", gap:2, marginTop:3 }}>
@@ -400,13 +397,11 @@ export default function App() {
   const periodKey = PERIOD_KEYS[activeTab];
   const theme     = MORANDI[periodKey];
 
-  // Auth state
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, u => setUser(u || null));
     return () => unsub();
   }, []);
 
-  // Firebase sync
   useEffect(() => {
     if (!user) return;
     const todosRef = ref(db, `users/${user.uid}/todos`);
@@ -426,7 +421,7 @@ export default function App() {
     return () => unsub();
   }, [user]);
 
-  const saveTodos = (updated) => {
+  const saveTodos = updated => {
     if (!user) return;
     set(ref(db, `users/${user.uid}/todos`), updated);
   };
@@ -450,7 +445,7 @@ export default function App() {
   const doneCount    = countDone(current);
   const progress     = totalCount ? Math.round(doneCount/totalCount*100) : 0;
   const overdueCount = current.filter(item => {
-    if (item.type==="project") return !(item.subtasks?.every(s=>s.done)) && isOverdue(item.deadline);
+    if (item.type==="project") return !item.subtasks?.every(s=>s.done) && isOverdue(item.deadline);
     return !item.done && isOverdue(item.deadline);
   }).length;
 
@@ -464,7 +459,7 @@ export default function App() {
     const base = { id:genId(), priority, deadline:deadline||null, createdAt:Date.now() };
     const item = addType==="project"
       ? { ...base, type:"project", title:inputText.trim(), subtasks:[] }
-      : { ...base, type:"single",  text:inputText.trim(), done:false };
+      : { ...base, type:"single", text:inputText.trim(), done:false };
     setList(prev => sortItems([item, ...prev]));
     setInputText(""); setDeadline("");
   };
@@ -511,14 +506,10 @@ export default function App() {
                 <button key={v} onClick={()=>setView(v)} style={{ padding:"7px 14px", border:"none", background:view===v?theme.main:"transparent", color:view===v?"white":"#9a9088", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"'Noto Sans TC',sans-serif", transition:"all 0.2s" }}>{l}</button>
               ))}
             </div>
-            {/* User avatar + logout */}
-            <div style={{ position:"relative" }}>
-              <img src={user.photoURL} alt="avatar" onClick={handleLogout}
-                title="點擊登出"
-                style={{ width:34, height:34, borderRadius:"50%", cursor:"pointer", border:"2px solid #ede9e4", transition:"opacity 0.2s" }}
-                onMouseEnter={e=>e.target.style.opacity=0.7} onMouseLeave={e=>e.target.style.opacity=1}
-              />
-            </div>
+            <img src={user.photoURL} alt="avatar" onClick={handleLogout} title="點擊登出"
+              style={{ width:34, height:34, borderRadius:"50%", cursor:"pointer", border:"2px solid #ede9e4" }}
+              onMouseEnter={e=>e.target.style.opacity=0.7} onMouseLeave={e=>e.target.style.opacity=1}
+            />
           </div>
         </div>
 
