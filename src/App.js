@@ -408,10 +408,19 @@ export default function App() {
     const unsub = onValue(todosRef, snapshot => {
       const data = snapshot.val();
       if (data) {
-  const fixItems = arr => Array.isArray(arr) ? arr.map(item => ({
-    ...item,
-    subtasks: Array.isArray(item.subtasks) ? item.subtasks : Object.values(item.subtasks || {}),
-  })) : [];
+  const fixSubtasks = subs => {
+    if (!subs) return [];
+    if (Array.isArray(subs)) return subs;
+    return Object.values(subs);
+  };
+  const fixItems = arr => {
+    if (!arr) return [];
+    const items = Array.isArray(arr) ? arr : Object.values(arr);
+    return items.map(item => ({
+      ...item,
+      subtasks: fixSubtasks(item.subtasks),
+    }));
+  };
   setTodos({
     work:  fixItems(data.work),
     study: fixItems(data.study),
