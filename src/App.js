@@ -34,10 +34,42 @@ function deadlineColor(dl, done) {
   if (isDueToday(dl)) return { border: "#d4c48a", color: "#9a8558" };
   return { border: "#cdc8c2", color: "#7a7068" };
 }
+
+// Firebase 回傳的陣列可能變成物件，這個函式修正它
+function fixArr(val) {
+  if (!val) return [];
+  if (Array.isArray(val)) return val;
+  return Object.values(val);
+}
+function fixItems(val) {
+  return fixArr(val).map(item => ({
+    ...item,
+    subtasks: fixArr(item.subtasks),
+  }));
+}
+
+// 把 todos 轉成 Firebase 可以存的格式（用物件取代陣列）
+function toFirebase(todos) {
+  const convert = items => {
+    const obj = {};
+    items.forEach((item, i) => {
+      const subsObj = {};
+      (item.subtasks || []).forEach((s, j) => { subsObj[j] = s; });
+      obj[i] = { ...item, subtasks: subsObj };
+    });
+    return obj;
+  };
+  return {
+    work:  convert(todos.work),
+    study: convert(todos.study),
+    house: convert(todos.house),
+  };
+}
+
 function sortItems(items) {
   return [...items].sort((a, b) => {
-    const aDone = a.type === "project" ? a.subtasks.every(s => s.done) : a.done;
-    const bDone = b.type === "project" ? b.subtasks.every(s => s.done) : b.done;
+    const aDone = a.type === "project" ? (a.subtasks||[]).every(s => s.done) : a.done;
+    const bDone = b.type === "project" ? (b.subtasks||[]).every(s => s.done) : b.done;
     if (aDone !== bDone) return aDone ? 1 : -1;
     const pa = PRIORITY_ORDER[a.priority] ?? 1;
     const pb = PRIORITY_ORDER[b.priority] ?? 1;
@@ -138,11 +170,11 @@ function Calendar({ todos, activeKey, onSelectDay }) {
           const day = dMap[ds];
           const isToday = ds === today;
           const isSel   = ds === selected;
-          const hasWork  = day?.work?.some(t => !t.done && !t.subtasks?.every(s=>s.done));
-          const hasStudy = day?.study?.some(t => !t.done && !t.subtasks?.every(s=>s.done));
-          const hasHouse = day?.house?.some(t => !t.done && !t.subtasks?.every(s=>s.done));
+          const hasWork  = day?.work?.some(t => !t.done && !(t.subtasks||[]).every(s=>s.done));
+          const hasStudy = day?.study?.some(t => !t.done && !(t.subtasks||[]).every(s=>s.done));
+          const hasHouse = day?.house?.some(t => !t.done && !(t.subtasks||[]).every(s=>s.done));
           const hasAny   = day && Object.values(day).flat().length > 0;
-          const allDone  = hasAny && Object.values(day).flat().every(t => t.done || t.subtasks?.every(s=>s.done));
+          const allDone  = hasAny && Object.values(day).flat().every(t => t.done || (t.subtasks||[]).every(s=>s.done));
           return (
             <div key={i} onClick={() => handleDay(d)} style={{ textAlign:"center", padding:"6px 2px 8px", borderRadius:10, cursor:"pointer", background:isSel?accent.main:isToday?accent.light:"transparent", transition:"background 0.15s" }}>
               <span style={{ fontSize:13, fontWeight:isToday?700:400, color:isSel?"white":isToday?accent.text:"#4a4540" }}>{d}</span>
@@ -189,7 +221,7 @@ function DayDetail({ date, items, onClose }) {
         : items.map((t,i) => {
           const cat = MORANDI[t._category] || MORANDI.work;
           const catLabel = PERIODS[PERIOD_KEYS.indexOf(t._category)];
-          const isDone = t.done || t.subtasks?.every(s=>s.done);
+          const isDone = t.done || (t.subtasks||[]).every(s=>s.done);
           return (
             <div key={i} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:6, padding:"8px 10px", background:"white", borderRadius:10, border:"1px solid #ede9e4" }}>
               <span style={{ width:8,height:8,borderRadius:"50%", background:cat.dot, flexShrink:0, display:"inline-block" }}/>
@@ -408,24 +440,12 @@ export default function App() {
     const unsub = onValue(todosRef, snapshot => {
       const data = snapshot.val();
       if (data) {
-  const fixSubtasks = subs => {
-    if (!subs) return [];
-    if (Array.isArray(subs)) return subs;
-    return Object.values(subs);
-  };
-  const fixItems = arr => {
-    if (!arr) return [];
-    const items = Array.isArray(arr) ? arr : Object.values(arr);
-    return items.map(item => ({
-      ...item,
-      subtasks: fixSubtasks(item.subtasks),
-    }));
-  };
-  setTodos({
-    work:  fixItems(data.work),
-    study: fixItems(data.study),
-    house: fixItems(data.house),
-  });
+        setTodos({
+          work:  fixItems(data.work),
+          study: fixItems(data.study),
+          house: fixItems(data.house),
+        });
+      } else {
         setTodos({ work:[], study:[], house:[] });
       }
       setLoading(false);
@@ -435,7 +455,7 @@ export default function App() {
 
   const saveTodos = updated => {
     if (!user) return;
-    set(ref(db, `users/${user.uid}/todos`), updated);
+    set(ref(db, `users/${user.uid}/todos`), toFirebase(updated));
   };
 
   const handleLogout = () => signOut(auth);
@@ -450,14 +470,14 @@ export default function App() {
 
   const current = todos[periodKey];
   const countDone = items => items.reduce((n, item) => {
-    if (item.type === "project") return n + (item.subtasks?.every(s=>s.done) && item.subtasks?.length>0 ? 1 : 0);
+    if (item.type === "project") return n + ((item.subtasks||[]).every(s=>s.done) && (item.subtasks||[]).length>0 ? 1 : 0);
     return n + (item.done ? 1 : 0);
   }, 0);
   const totalCount   = current.length;
   const doneCount    = countDone(current);
   const progress     = totalCount ? Math.round(doneCount/totalCount*100) : 0;
   const overdueCount = current.filter(item => {
-    if (item.type==="project") return !item.subtasks?.every(s=>s.done) && isOverdue(item.deadline);
+    if (item.type==="project") return !(item.subtasks||[]).every(s=>s.done) && isOverdue(item.deadline);
     return !item.done && isOverdue(item.deadline);
   }).length;
 
@@ -478,12 +498,12 @@ export default function App() {
   const updateItem = updated => setList(prev => sortItems(prev.map(i => i.id===updated.id?updated:i)));
   const deleteItem = id => setList(prev => prev.filter(i => i.id!==id));
   const clearDone  = () => setList(prev => prev.filter(item => {
-    if (item.type==="project") return !(item.subtasks?.length>0&&item.subtasks.every(s=>s.done));
+    if (item.type==="project") return !((item.subtasks||[]).length>0&&(item.subtasks||[]).every(s=>s.done));
     return !item.done;
   }));
   const sorted   = sortItems(current);
   const filtered = sorted.filter(item => {
-    const done = item.type==="project" ? item.subtasks?.length>0&&item.subtasks.every(s=>s.done) : item.done;
+    const done = item.type==="project" ? (item.subtasks||[]).length>0&&(item.subtasks||[]).every(s=>s.done) : item.done;
     if (filter==="all")  return true;
     if (filter==="done") return done;
     return !done;
@@ -498,7 +518,7 @@ export default function App() {
   );
 
   return (
-    <div style={{ minHeight:"100vh", background:"#f5f0eb", fontFamily:"'Noto Sans TC','PingFang TC',sans-serif", display:"flex", justifyContent:"center", padding:"32px 16px" }}>
+    <div style={{ minHeight:"100vh", background:"#f5f0eb", fontFamily:"'Noto Sans TC','PingFang TC',sans-serif", display:"flex", justifyContent:"center", padding:"24px 12px" }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;600;700&display=swap');
         * { box-sizing:border-box; }
@@ -507,31 +527,33 @@ export default function App() {
         ::-webkit-scrollbar-thumb { background:#ddd8d2; border-radius:4px; }
       `}</style>
       <div style={{ width:"100%", maxWidth:560 }}>
-        <div style={{ marginBottom:24, display:"flex", justifyContent:"space-between", alignItems:"flex-end" }}>
+        <div style={{ marginBottom:20, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
           <div>
-            <div style={{ fontSize:12, color:"#b8afa8", marginBottom:3 }}>{dateStr}</div>
-            <h1 style={{ fontSize:18, fontWeight:700, color:"#3a3530", margin:0, letterSpacing:"-0.5px" }}>Michelle's To-do List</h1>
+            <div style={{ fontSize:11, color:"#b8afa8", marginBottom:2 }}>{dateStr}</div>
+            <h1 style={{ fontSize:18, fontWeight:700, color:"#3a3530", margin:0 }}>Michelle's To-do List</h1>
           </div>
-          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:6 }}>
             <div style={{ display:"flex", background:"white", borderRadius:10, border:"1.5px solid #ede9e4", overflow:"hidden" }}>
-              {[["list","☰ 清單"],["calendar","📅 月曆"]].map(([v,l])=>(
-                <button key={v} onClick={()=>setView(v)} style={{ padding:"7px 14px", border:"none", background:view===v?theme.main:"transparent", color:view===v?"white":"#9a9088", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"'Noto Sans TC',sans-serif", transition:"all 0.2s" }}>{l}</button>
+              {[["list","☰"],["calendar","📅"]].map(([v,l])=>(
+                <button key={v} onClick={()=>setView(v)} style={{ padding:"7px 12px", border:"none", background:view===v?theme.main:"transparent", color:view===v?"white":"#9a9088", fontSize:13, fontWeight:600, cursor:"pointer", transition:"all 0.2s" }}>{l}</button>
               ))}
             </div>
             <img src={user.photoURL} alt="avatar" onClick={handleLogout} title="點擊登出"
-              style={{ width:34, height:34, borderRadius:"50%", cursor:"pointer", border:"2px solid #ede9e4" }}
+              style={{ width:32, height:32, borderRadius:"50%", cursor:"pointer", border:"2px solid #ede9e4" }}
               onMouseEnter={e=>e.target.style.opacity=0.7} onMouseLeave={e=>e.target.style.opacity=1}
             />
           </div>
         </div>
 
-        <div style={{ display:"flex", background:"white", borderRadius:18, padding:5, marginBottom:16, border:"1.5px solid #ede9e4", boxShadow:"0 2px 10px rgba(0,0,0,0.05)" }}>
+        <div style={{ display:"flex", background:"white", borderRadius:18, padding:5, marginBottom:14, border:"1.5px solid #ede9e4", boxShadow:"0 2px 10px rgba(0,0,0,0.05)" }}>
           {PERIODS.map((p,i) => {
-            const k=PERIOD_KEYS[i]; const cnt=todos[k].filter(item=>item.type==="project"?!(item.subtasks?.every(s=>s.done)&&item.subtasks?.length>0):!item.done).length; const m=MORANDI[k];
+            const k=PERIOD_KEYS[i];
+            const cnt=todos[k].filter(item=>item.type==="project"?!((item.subtasks||[]).every(s=>s.done)&&(item.subtasks||[]).length>0):!item.done).length;
+            const m=MORANDI[k];
             return (
-              <button key={k} onClick={()=>setActiveTab(i)} style={{ flex:1, padding:"10px 8px", borderRadius:13, border:"none", cursor:"pointer", background:activeTab===i?m.main:"transparent", color:activeTab===i?"white":m.text, fontWeight:activeTab===i?700:500, fontSize:14, transition:"all 0.2s", display:"flex", alignItems:"center", justifyContent:"center", gap:5, fontFamily:"'Noto Sans TC',sans-serif" }}>
+              <button key={k} onClick={()=>setActiveTab(i)} style={{ flex:1, padding:"9px 4px", borderRadius:13, border:"none", cursor:"pointer", background:activeTab===i?m.main:"transparent", color:activeTab===i?"white":m.text, fontWeight:activeTab===i?700:500, fontSize:13, transition:"all 0.2s", display:"flex", alignItems:"center", justifyContent:"center", gap:4, fontFamily:"'Noto Sans TC',sans-serif" }}>
                 <span>{ICONS[k]}</span><span>{p}</span>
-                {cnt>0 && <span style={{ background:activeTab===i?"rgba(255,255,255,0.3)":m.light, color:activeTab===i?"white":m.text, borderRadius:20, fontSize:11, fontWeight:700, padding:"1px 7px" }}>{cnt}</span>}
+                {cnt>0 && <span style={{ background:activeTab===i?"rgba(255,255,255,0.3)":m.light, color:activeTab===i?"white":m.text, borderRadius:20, fontSize:10, fontWeight:700, padding:"1px 6px" }}>{cnt}</span>}
               </button>
             );
           })}
@@ -545,46 +567,46 @@ export default function App() {
         )}
 
         {totalCount>0 && (
-          <div style={{ background:"white", borderRadius:14, padding:"12px 16px", marginBottom:14, border:"1.5px solid #ede9e4", boxShadow:"0 2px 8px rgba(0,0,0,0.04)" }}>
-            <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6, alignItems:"center" }}>
-              <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          <div style={{ background:"white", borderRadius:14, padding:"10px 14px", marginBottom:12, border:"1.5px solid #ede9e4", boxShadow:"0 2px 8px rgba(0,0,0,0.04)" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", marginBottom:5, alignItems:"center" }}>
+              <div style={{ display:"flex", alignItems:"center", gap:8 }}>
                 <span style={{ fontSize:12, color:"#9a9088", fontWeight:500 }}>完成進度</span>
-                {overdueCount>0 && <span style={{ fontSize:11, color:"#b07070", background:"#f0e8e8", padding:"1px 7px", borderRadius:20, fontWeight:600 }}>⚠ {overdueCount} 項逾期</span>}
+                {overdueCount>0 && <span style={{ fontSize:11, color:"#b07070", background:"#f0e8e8", padding:"1px 6px", borderRadius:20, fontWeight:600 }}>⚠ {overdueCount} 項逾期</span>}
               </div>
               <span style={{ fontSize:12, color:theme.text, fontWeight:700 }}>{doneCount}/{totalCount} ({progress}%)</span>
             </div>
-            <div style={{ height:7, background:"#f0ece8", borderRadius:8, overflow:"hidden" }}>
+            <div style={{ height:6, background:"#f0ece8", borderRadius:8, overflow:"hidden" }}>
               <div style={{ height:"100%", width:`${progress}%`, background:theme.main, borderRadius:8, transition:"width 0.4s ease" }}/>
             </div>
           </div>
         )}
 
-        <div style={{ background:"white", borderRadius:16, padding:16, marginBottom:14, border:`1.5px solid ${theme.light}`, boxShadow:"0 2px 12px rgba(0,0,0,0.05)" }}>
-          <div style={{ display:"flex", gap:6, marginBottom:12 }}>
+        <div style={{ background:"white", borderRadius:16, padding:14, marginBottom:12, border:`1.5px solid ${theme.light}`, boxShadow:"0 2px 12px rgba(0,0,0,0.05)" }}>
+          <div style={{ display:"flex", gap:6, marginBottom:10 }}>
             {[["single","✏️ 單一任務"],["project","📁 大項目"]].map(([t,l])=>(
-              <button key={t} onClick={()=>setAddType(t)} style={{ padding:"5px 14px", borderRadius:20, border:`1.5px solid ${addType===t?theme.main:"#ede9e4"}`, background:addType===t?theme.soft:"transparent", color:addType===t?theme.text:"#b8afa8", fontSize:12, fontWeight:addType===t?700:400, cursor:"pointer", fontFamily:"'Noto Sans TC',sans-serif", transition:"all 0.15s" }}>{l}</button>
+              <button key={t} onClick={()=>setAddType(t)} style={{ padding:"5px 12px", borderRadius:20, border:`1.5px solid ${addType===t?theme.main:"#ede9e4"}`, background:addType===t?theme.soft:"transparent", color:addType===t?theme.text:"#b8afa8", fontSize:12, fontWeight:addType===t?700:400, cursor:"pointer", fontFamily:"'Noto Sans TC',sans-serif" }}>{l}</button>
             ))}
           </div>
-          <div style={{ display:"flex", gap:8, marginBottom:10 }}>
+          <div style={{ display:"flex", gap:6, marginBottom:10 }}>
             <input value={inputText} onChange={e=>setInputText(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addItem()}
-              placeholder={addType==="project"?`新增 📁 大項目名稱...`:`新增 ${ICONS[periodKey]} ${PERIODS[activeTab]} 任務...`}
-              style={{ flex:1, padding:"9px 13px", borderRadius:10, border:"1.5px solid #ede9e4", fontSize:14, color:"#3a3530", fontFamily:"'Noto Sans TC',sans-serif", outline:"none", background:"#faf8f5" }}
+              placeholder={addType==="project"?`新增大項目...`:`新增 ${PERIODS[activeTab]} 任務...`}
+              style={{ flex:1, padding:"9px 12px", borderRadius:10, border:"1.5px solid #ede9e4", fontSize:14, color:"#3a3530", fontFamily:"'Noto Sans TC',sans-serif", outline:"none", background:"#faf8f5", minWidth:0 }}
               onFocus={e=>e.target.style.borderColor=theme.main} onBlur={e=>e.target.style.borderColor="#ede9e4"}
             />
-            <button onClick={addItem} style={{ padding:"9px 10px", borderRadius:10, border:"none", background:theme.main, color:"white", fontSize:13, fontWeight:700, cursor:"pointer", fontFamily:"'Noto Sans TC',sans-serif", whiteSpace:"nowrap" }}
+            <button onClick={addItem} style={{ padding:"9px 14px", borderRadius:10, border:"none", background:theme.main, color:"white", fontSize:13, fontWeight:700, cursor:"pointer", fontFamily:"'Noto Sans TC',sans-serif", whiteSpace:"nowrap", flexShrink:0 }}
               onMouseEnter={e=>e.currentTarget.style.opacity=0.85} onMouseLeave={e=>e.currentTarget.style.opacity=1}>新增</button>
           </div>
-          <div style={{ display:"flex", gap:14, alignItems:"center", flexWrap:"wrap" }}>
-            <div style={{ display:"flex", gap:5, alignItems:"center" }}>
+          <div style={{ display:"flex", gap:10, alignItems:"center", flexWrap:"wrap" }}>
+            <div style={{ display:"flex", gap:4, alignItems:"center" }}>
               <span style={{ fontSize:12, color:"#b8afa8" }}>優先度：</span>
               {[["high","重要"],["mid","普通"],["low","低"]].map(([val,label])=>{ const pm=PRIORITY_META[val]; return (
-                <button key={val} onClick={()=>setPriority(val)} style={{ padding:"3px 10px", borderRadius:20, border:`1.5px solid ${priority===val?pm.color:"#ede9e4"}`, background:priority===val?pm.bg:"transparent", color:priority===val?pm.color:"#b8afa8", fontSize:12, fontWeight:priority===val?700:400, cursor:"pointer", fontFamily:"'Noto Sans TC',sans-serif", transition:"all 0.15s" }}>{label}</button>
+                <button key={val} onClick={()=>setPriority(val)} style={{ padding:"3px 8px", borderRadius:20, border:`1.5px solid ${priority===val?pm.color:"#ede9e4"}`, background:priority===val?pm.bg:"transparent", color:priority===val?pm.color:"#b8afa8", fontSize:12, fontWeight:priority===val?700:400, cursor:"pointer", fontFamily:"'Noto Sans TC',sans-serif" }}>{label}</button>
               );})}
             </div>
-            <div style={{ display:"flex", gap:5, alignItems:"center" }}>
-              <span style={{ fontSize:12, color:"#b8afa8" }}>{addType==="project"?"項目截止：":"截止："}</span>
+            <div style={{ display:"flex", gap:4, alignItems:"center" }}>
+              <span style={{ fontSize:12, color:"#b8afa8" }}>截止：</span>
               <input type="date" value={deadline} min={TODAY()} onChange={e=>setDeadline(e.target.value)}
-                style={{ border:"1.5px solid #ede9e4", borderRadius:8, padding:"3px 8px", fontSize:12, color:deadline?"#3a3530":"#b8afa8", cursor:"pointer", outline:"none", background:"#faf8f5" }}
+                style={{ border:"1.5px solid #ede9e4", borderRadius:8, padding:"3px 6px", fontSize:12, color:deadline?"#3a3530":"#b8afa8", cursor:"pointer", outline:"none", background:"#faf8f5" }}
               />
               {deadline && <button onClick={()=>setDeadline("")} style={{ background:"none",border:"none",cursor:"pointer",color:"#b8afa8",fontSize:13,padding:0 }}>✕</button>}
             </div>
@@ -592,10 +614,10 @@ export default function App() {
         </div>
 
         {view==="list" && (
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
             <div style={{ display:"flex", gap:4 }}>
               {[["all","全部"],["todo","待完成"],["done","已完成"]].map(([val,label])=>(
-                <button key={val} onClick={()=>setFilter(val)} style={{ padding:"4px 11px", borderRadius:20, border:"none", background:filter===val?theme.light:"transparent", color:filter===val?theme.text:"#b8afa8", fontSize:12, fontWeight:filter===val?700:400, cursor:"pointer", fontFamily:"'Noto Sans TC',sans-serif" }}>{label}</button>
+                <button key={val} onClick={()=>setFilter(val)} style={{ padding:"4px 10px", borderRadius:20, border:"none", background:filter===val?theme.light:"transparent", color:filter===val?theme.text:"#b8afa8", fontSize:12, fontWeight:filter===val?700:400, cursor:"pointer", fontFamily:"'Noto Sans TC',sans-serif" }}>{label}</button>
               ))}
             </div>
             {doneCount>0 && <button onClick={clearDone} style={{ background:"none",border:"none",color:"#b8afa8",fontSize:12,cursor:"pointer",fontFamily:"'Noto Sans TC',sans-serif" }}>清除已完成</button>}
@@ -617,7 +639,7 @@ export default function App() {
           </div>
         )}
 
-        <div style={{ textAlign:"center", marginTop:28, fontSize:11, color:"#cdc8c2" }}>
+        <div style={{ textAlign:"center", marginTop:24, fontSize:11, color:"#cdc8c2" }}>
           雙擊文字可編輯 · 依重要性自動排序 · 資料同步至雲端 ☁️
         </div>
       </div>
