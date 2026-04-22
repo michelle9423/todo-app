@@ -437,7 +437,7 @@ export default function App() {
         <div style={{ marginBottom:24, display:"flex", justifyContent:"space-between", alignItems:"flex-end" }}>
           <div>
             <div style={{ fontSize:12, color:"#b8afa8", marginBottom:3 }}>{dateStr}</div>
-            <h1 style={{ fontSize:24, fontWeight:700, color:"#3a3530", margin:0, letterSpacing:"-0.5px" }}>我的工作清單</h1>
+            <h1 style={{ fontSize:24, fontWeight:700, color:"#3a3530", margin:0, letterSpacing:"-0.5px" }}>Michelle's To-do List</h1>
           </div>
           <div style={{ display:"flex", background:"white", borderRadius:10, border:"1.5px solid #ede9e4", overflow:"hidden" }}>
             {[["list","☰ 清單"],["calendar","📅 月曆"]].map(([v,l])=>(
