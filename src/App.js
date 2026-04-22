@@ -3,7 +3,7 @@ import { db, auth, googleProvider } from "./firebase";
 import { ref, onValue, set } from "firebase/database";
 import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 
-const PERIODS     = ["Work", "Study", "House"];
+const PERIODS     = ["Work", "Study", "Home"];
 const PERIOD_KEYS = ["work", "study", "house"];
 const ICONS = { work: "💼", study: "📖", house: "🏠" };
 
@@ -98,7 +98,7 @@ function Calendar({ todos, activeKey, onSelectDay }) {
   const dMap = {};
   const addToMap = (date, item, cat) => {
     if (!date) return;
-    if (!dMap[date]) dMap[date] = { work: [], study: [], house: [] };
+    if (!dMap[date]) dMap[date] = { work: [], study: [], : [] };
     dMap[date][cat].push(item);
   };
   PERIOD_KEYS.forEach(k => {
@@ -143,7 +143,7 @@ function Calendar({ todos, activeKey, onSelectDay }) {
           const isSel   = ds === selected;
           const hasWork  = day?.work?.some(t => !t.done && !t.subtasks?.every(s=>s.done));
           const hasStudy = day?.study?.some(t => !t.done && !t.subtasks?.every(s=>s.done));
-          const hasHouse = day?.house?.some(t => !t.done && !t.subtasks?.every(s=>s.done));
+          const has = day?.house?.some(t => !t.done && !t.subtasks?.every(s=>s.done));
           const hasAny   = day && Object.values(day).flat().length > 0;
           const allDone  = hasAny && Object.values(day).flat().every(t => t.done || t.subtasks?.every(s=>s.done));
           return (
