@@ -35,7 +35,6 @@ function deadlineColor(dl, done) {
   return { border: "#cdc8c2", color: "#7a7068" };
 }
 
-// Firebase 回傳的陣列可能變成物件，這個函式修正它
 function fixArr(val) {
   if (!val) return [];
   if (Array.isArray(val)) return val;
@@ -47,8 +46,6 @@ function fixItems(val) {
     subtasks: fixArr(item.subtasks),
   }));
 }
-
-// 把 todos 轉成 Firebase 可以存的格式（用物件取代陣列）
 function toFirebase(todos) {
   const convert = items => {
     const obj = {};
@@ -133,10 +130,10 @@ function Calendar({ todos, activeKey, onSelectDay }) {
   PERIOD_KEYS.forEach(k => {
     (todos[k] || []).forEach(item => {
       if (item.type === "project") {
-        if (item.deadline) addToMap(item.deadline, { ...item, _isProject: true }, k);
-        (item.subtasks || []).forEach(s => { if (s.deadline) addToMap(s.deadline, { ...s, _parentTitle: item.title, _category: k }, k); });
+        if (item.deadline) addToMap(item.deadline, { ...item, _isProject: true, _category: k }, k);
+        (item.subtasks || []).forEach(s => { if (s.deadline) addToMap(s.deadline, { ...s, _parentTitle: item.title, _parentId: item.id, _category: k }, k); });
       } else {
-        if (item.deadline) addToMap(item.deadline, item, k);
+        if (item.deadline) addToMap(item.deadline, { ...item, _category: k }, k);
       }
     });
   });
@@ -174,7 +171,7 @@ function Calendar({ todos, activeKey, onSelectDay }) {
           const hasStudy = day?.study?.some(t => !t.done && !(t.subtasks||[]).every(s=>s.done));
           const hasHouse = day?.house?.some(t => !t.done && !(t.subtasks||[]).every(s=>s.done));
           const hasAny   = day && Object.values(day).flat().length > 0;
-          const allDone  = hasAny && Object.values(day).flat().every(t => t.done || (t.subtasks||[]).every(s=>s.done));
+          const allDone  = hasAny && Object.values(day).flat().every(t => t.done || ((t.subtasks||[]).length>0 && (t.subtasks||[]).every(s=>s.done)));
           return (
             <div key={i} onClick={() => handleDay(d)} style={{ textAlign:"center", padding:"6px 2px 8px", borderRadius:10, cursor:"pointer", background:isSel?accent.main:isToday?accent.light:"transparent", transition:"background 0.15s" }}>
               <span style={{ fontSize:13, fontWeight:isToday?700:400, color:isSel?"white":isToday?accent.text:"#4a4540" }}>{d}</span>
@@ -207,31 +204,61 @@ function Calendar({ todos, activeKey, onSelectDay }) {
   );
 }
 
-function DayDetail({ date, items, onClose }) {
+function DayDetail({ date, items, onToggle, onClose }) {
   if (!date) return null;
+  const [localItems, setLocalItems] = useState(items);
+  useEffect(() => setLocalItems(items), [items]);
   const d = new Date(date + "T00:00:00");
   const label = d.toLocaleDateString("zh-TW", { month:"long", day:"numeric", weekday:"short" });
+  const handleToggle = (cat, itemId, subId) => {
+    setLocalItems(prev => prev.map(t => {
+      if (subId && t.id === subId && t._parentId) return { ...t, done: !t.done };
+      if (!subId && t.id === itemId && !t._parentId) return { ...t, done: !t.done };
+      return t;
+    }));
+    onToggle(cat, itemId, subId);
+  };
   return (
     <div style={{ background:"#faf8f5", border:"1.5px solid #e8e3de", borderRadius:14, padding:"14px 16px", marginBottom:16 }}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
         <span style={{ fontWeight:700, fontSize:14, color:"#5a5048" }}>📅 {label} 的截止任務</span>
         <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#b8afa8", fontSize:18 }}>×</button>
       </div>
-      {items.length === 0 ? <div style={{ fontSize:13, color:"#b8afa8" }}>這天沒有截止任務</div>
-        : items.map((t,i) => {
+      {localItems.length === 0
+        ? <div style={{ fontSize:13, color:"#b8afa8" }}>這天沒有截止任務</div>
+        : localItems.map((t,i) => {
           const cat = MORANDI[t._category] || MORANDI.work;
           const catLabel = PERIODS[PERIOD_KEYS.indexOf(t._category)];
-          const isDone = t.done || ((t.subtasks||[]).length > 0 && (t.subtasks||[]).every(s=>s.done));
+          const isSubtask = !!t._parentTitle;
+          const isDone = isSubtask
+            ? t.done
+            : t.type === "project"
+              ? ((t.subtasks||[]).length > 0 && (t.subtasks||[]).every(s=>s.done))
+              : t.done;
           return (
-            <div key={i} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:6, padding:"8px 10px", background:"white", borderRadius:10, border:"1px solid #ede9e4" }}>
-              <span style={{ width:8,height:8,borderRadius:"50%", background:cat.dot, flexShrink:0, display:"inline-block" }}/>
+            <div key={i} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:6,
+              padding: isSubtask ? "6px 10px 6px 28px" : "8px 10px",
+              background:"white", borderRadius:10, border:"1px solid #ede9e4",
+              marginLeft: isSubtask ? 8 : 0,
+            }}>
+              {/* 勾選框：單一任務和子任務才有，大項目本身不顯示 */}
+              {(t.type !== "project" || isSubtask) && (
+                <button
+                  onClick={() => handleToggle(t._category, isSubtask ? t._parentId : t.id, isSubtask ? t.id : null)}
+                  style={{ width:18, height:18, borderRadius:5,
+                    border:`2px solid ${t.done?cat.main:"#cdc8c2"}`,
+                    background:t.done?cat.main:"white",
+                    cursor:"pointer", flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center",
+                  }}>
+                  {t.done && <svg width="9" height="9" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                </button>
+              )}
+              {t.type === "project" && !isSubtask && <span style={{ fontSize:13 }}>📁</span>}
               <span style={{ flex:1, fontSize:13, color:isDone?"#b8afa8":"#3a3530", textDecoration:isDone?"line-through":"none" }}>
-                {t._parentTitle ? <span style={{ color:"#b8afa8" }}>{t._parentTitle} › </span> : null}
+                {isSubtask && <span style={{ color:"#b8afa8", fontSize:11 }}>{t._parentTitle} › </span>}
                 {t.title || t.text}
               </span>
-              {t._isProject && <span style={{ fontSize:10, padding:"1px 6px", borderRadius:20, background:"#f0ece8", color:"#9a9088" }}>大項目</span>}
               <span style={{ fontSize:10, padding:"1px 6px", borderRadius:20, background:cat.light, color:cat.text, fontWeight:700 }}>{catLabel}</span>
-              {isDone && <span style={{ fontSize:12, color:"#8aab8c" }}>✓</span>}
             </div>
           );
         })
@@ -460,6 +487,24 @@ export default function App() {
 
   const handleLogout = () => signOut(auth);
 
+  const handleCalToggle = (cat, itemId, subId) => {
+    const list = todos[cat];
+    const updated = list.map(item => {
+      if (subId) {
+        if (item.type === "project") {
+          return { ...item, subtasks: (item.subtasks||[]).map(s => s.id===subId ? {...s, done:!s.done} : s) };
+        }
+        return item;
+      } else if (item.id === itemId) {
+        return { ...item, done: !item.done };
+      }
+      return item;
+    });
+    const newTodos = { ...todos, [cat]: updated };
+    setTodos(newTodos);
+    saveTodos(newTodos);
+  };
+
   if (user === undefined) return (
     <div style={{ minHeight:"100vh", background:"#f5f0eb", display:"flex", alignItems:"center", justifyContent:"center" }}>
       <div style={{ fontSize:32 }}>📋</div>
@@ -562,7 +607,14 @@ export default function App() {
         {view==="calendar" && (
           <>
             <Calendar todos={todos} activeKey={periodKey} onSelectDay={(ds,items)=>{setCalSelected(ds);setCalItems(items);}}/>
-            {calSelected && <DayDetail date={calSelected} items={calItems} onClose={()=>setCalSelected(null)}/>}
+            {calSelected && (
+              <DayDetail
+                date={calSelected}
+                items={calItems}
+                onToggle={handleCalToggle}
+                onClose={()=>setCalSelected(null)}
+              />
+            )}
           </>
         )}
 
