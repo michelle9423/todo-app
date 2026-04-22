@@ -221,7 +221,7 @@ function DayDetail({ date, items, onClose }) {
         : items.map((t,i) => {
           const cat = MORANDI[t._category] || MORANDI.work;
           const catLabel = PERIODS[PERIOD_KEYS.indexOf(t._category)];
-          const isDone = t.done || (t.subtasks||[]).every(s=>s.done);
+          const isDone = t.done || ((t.subtasks||[]).length > 0 && (t.subtasks||[]).every(s=>s.done));
           return (
             <div key={i} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:6, padding:"8px 10px", background:"white", borderRadius:10, border:"1px solid #ede9e4" }}>
               <span style={{ width:8,height:8,borderRadius:"50%", background:cat.dot, flexShrink:0, display:"inline-block" }}/>
