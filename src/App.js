@@ -408,12 +408,15 @@ export default function App() {
     const unsub = onValue(todosRef, snapshot => {
       const data = snapshot.val();
       if (data) {
-        setTodos({
-          work:  Array.isArray(data.work)  ? data.work  : [],
-          study: Array.isArray(data.study) ? data.study : [],
-          house: Array.isArray(data.house) ? data.house : [],
-        });
-      } else {
+  const fixItems = arr => Array.isArray(arr) ? arr.map(item => ({
+    ...item,
+    subtasks: Array.isArray(item.subtasks) ? item.subtasks : Object.values(item.subtasks || {}),
+  })) : [];
+  setTodos({
+    work:  fixItems(data.work),
+    study: fixItems(data.study),
+    house: fixItems(data.house),
+  });
         setTodos({ work:[], study:[], house:[] });
       }
       setLoading(false);
@@ -498,7 +501,7 @@ export default function App() {
         <div style={{ marginBottom:24, display:"flex", justifyContent:"space-between", alignItems:"flex-end" }}>
           <div>
             <div style={{ fontSize:12, color:"#b8afa8", marginBottom:3 }}>{dateStr}</div>
-            <h1 style={{ fontSize:24, fontWeight:700, color:"#3a3530", margin:0, letterSpacing:"-0.5px" }}>Michelle's To-do List</h1>
+            <h1 style={{ fontSize:18, fontWeight:700, color:"#3a3530", margin:0, letterSpacing:"-0.5px" }}>Michelle's To-do List</h1>
           </div>
           <div style={{ display:"flex", alignItems:"center", gap:8 }}>
             <div style={{ display:"flex", background:"white", borderRadius:10, border:"1.5px solid #ede9e4", overflow:"hidden" }}>
@@ -559,7 +562,7 @@ export default function App() {
               style={{ flex:1, padding:"9px 13px", borderRadius:10, border:"1.5px solid #ede9e4", fontSize:14, color:"#3a3530", fontFamily:"'Noto Sans TC',sans-serif", outline:"none", background:"#faf8f5" }}
               onFocus={e=>e.target.style.borderColor=theme.main} onBlur={e=>e.target.style.borderColor="#ede9e4"}
             />
-            <button onClick={addItem} style={{ padding:"9px 16px", borderRadius:10, border:"none", background:theme.main, color:"white", fontSize:14, fontWeight:700, cursor:"pointer", fontFamily:"'Noto Sans TC',sans-serif", whiteSpace:"nowrap" }}
+            <button onClick={addItem} style={{ padding:"9px 10px", borderRadius:10, border:"none", background:theme.main, color:"white", fontSize:13, fontWeight:700, cursor:"pointer", fontFamily:"'Noto Sans TC',sans-serif", whiteSpace:"nowrap" }}
               onMouseEnter={e=>e.currentTarget.style.opacity=0.85} onMouseLeave={e=>e.currentTarget.style.opacity=1}>新增</button>
           </div>
           <div style={{ display:"flex", gap:14, alignItems:"center", flexWrap:"wrap" }}>
