@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
-import { db } from "./firebase";
+import { db, auth, googleProvider } from "./firebase";
 import { ref, onValue, set } from "firebase/database";
+import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 
 const PERIODS     = ["Work", "Study", "House"];
 const PERIOD_KEYS = ["work", "study", "house"];
@@ -48,6 +49,44 @@ function sortItems(items) {
   });
 }
 
+// ── Login Screen ──────────────────────────────────────────────────────
+function LoginScreen({ onLogin }) {
+  const [loading, setLoading] = useState(false);
+  const handleLogin = async () => {
+    setLoading(true);
+    try { await signInWithPopup(auth, googleProvider); }
+    catch (e) { console.error(e); setLoading(false); }
+  };
+  return (
+    <div style={{ minHeight:"100vh", background:"#f5f0eb", display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"'Noto Sans TC','PingFang TC',sans-serif" }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;600;700&display=swap');`}</style>
+      <div style={{ textAlign:"center", padding:40 }}>
+        <div style={{ fontSize:48, marginBottom:16 }}>📋</div>
+        <h1 style={{ fontSize:24, fontWeight:700, color:"#3a3530", marginBottom:8 }}>Michelle's To-do List</h1>
+        <p style={{ fontSize:14, color:"#b8afa8", marginBottom:32 }}>請登入以存取你的清單</p>
+        <button onClick={handleLogin} disabled={loading} style={{
+          display:"flex", alignItems:"center", gap:12, margin:"0 auto",
+          padding:"12px 24px", borderRadius:12, border:"1.5px solid #ede9e4",
+          background:"white", cursor:loading?"not-allowed":"pointer",
+          fontSize:15, fontWeight:600, color:"#3a3530",
+          boxShadow:"0 2px 12px rgba(0,0,0,0.08)", transition:"all 0.2s",
+          fontFamily:"'Noto Sans TC',sans-serif",
+          opacity: loading ? 0.7 : 1,
+        }}>
+          <svg width="20" height="20" viewBox="0 0 48 48">
+            <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+            <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+            <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+            <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+          </svg>
+          {loading ? "登入中..." : "使用 Google 帳號登入"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Calendar ──────────────────────────────────────────────────────────
 function Calendar({ todos, activeKey, onSelectDay }) {
   const [curYear, setCurYear]   = useState(new Date().getFullYear());
   const [curMonth, setCurMonth] = useState(new Date().getMonth());
@@ -345,6 +384,7 @@ function SingleItem({ item, theme, onUpdate, onDelete }) {
 }
 
 export default function App() {
+  const [user, setUser]           = useState(undefined);
   const [activeTab, setActiveTab] = useState(0);
   const [view, setView]           = useState("list");
   const [todos, setTodos]         = useState({ work:[], study:[], house:[] });
@@ -356,11 +396,20 @@ export default function App() {
   const [filter, setFilter]       = useState("all");
   const [calSelected, setCalSelected] = useState(null);
   const [calItems, setCalItems]   = useState([]);
+
   const periodKey = PERIOD_KEYS[activeTab];
   const theme     = MORANDI[periodKey];
 
+  // Auth state
   useEffect(() => {
-    const todosRef = ref(db, "todos");
+    const unsub = onAuthStateChanged(auth, u => setUser(u || null));
+    return () => unsub();
+  }, []);
+
+  // Firebase sync
+  useEffect(() => {
+    if (!user) return;
+    const todosRef = ref(db, `users/${user.uid}/todos`);
     const unsub = onValue(todosRef, snapshot => {
       const data = snapshot.val();
       if (data) {
@@ -369,13 +418,29 @@ export default function App() {
           study: Array.isArray(data.study) ? data.study : [],
           house: Array.isArray(data.house) ? data.house : [],
         });
+      } else {
+        setTodos({ work:[], study:[], house:[] });
       }
       setLoading(false);
     });
     return () => unsub();
-  }, []);
+  }, [user]);
 
-  const saveTodos = (updated) => { set(ref(db, "todos"), updated); };
+  const saveTodos = (updated) => {
+    if (!user) return;
+    set(ref(db, `users/${user.uid}/todos`), updated);
+  };
+
+  const handleLogout = () => signOut(auth);
+
+  if (user === undefined) return (
+    <div style={{ minHeight:"100vh", background:"#f5f0eb", display:"flex", alignItems:"center", justifyContent:"center" }}>
+      <div style={{ fontSize:32 }}>📋</div>
+    </div>
+  );
+
+  if (user === null) return <LoginScreen />;
+
   const current = todos[periodKey];
   const countDone = items => items.reduce((n, item) => {
     if (item.type === "project") return n + (item.subtasks?.every(s=>s.done) && item.subtasks?.length>0 ? 1 : 0);
@@ -388,6 +453,7 @@ export default function App() {
     if (item.type==="project") return !(item.subtasks?.every(s=>s.done)) && isOverdue(item.deadline);
     return !item.done && isOverdue(item.deadline);
   }).length;
+
   const setList = fn => {
     const updated = { ...todos, [periodKey]: fn(todos[periodKey]) };
     setTodos(updated);
@@ -439,12 +505,23 @@ export default function App() {
             <div style={{ fontSize:12, color:"#b8afa8", marginBottom:3 }}>{dateStr}</div>
             <h1 style={{ fontSize:24, fontWeight:700, color:"#3a3530", margin:0, letterSpacing:"-0.5px" }}>Michelle's To-do List</h1>
           </div>
-          <div style={{ display:"flex", background:"white", borderRadius:10, border:"1.5px solid #ede9e4", overflow:"hidden" }}>
-            {[["list","☰ 清單"],["calendar","📅 月曆"]].map(([v,l])=>(
-              <button key={v} onClick={()=>setView(v)} style={{ padding:"7px 14px", border:"none", background:view===v?theme.main:"transparent", color:view===v?"white":"#9a9088", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"'Noto Sans TC',sans-serif", transition:"all 0.2s" }}>{l}</button>
-            ))}
+          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            <div style={{ display:"flex", background:"white", borderRadius:10, border:"1.5px solid #ede9e4", overflow:"hidden" }}>
+              {[["list","☰ 清單"],["calendar","📅 月曆"]].map(([v,l])=>(
+                <button key={v} onClick={()=>setView(v)} style={{ padding:"7px 14px", border:"none", background:view===v?theme.main:"transparent", color:view===v?"white":"#9a9088", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"'Noto Sans TC',sans-serif", transition:"all 0.2s" }}>{l}</button>
+              ))}
+            </div>
+            {/* User avatar + logout */}
+            <div style={{ position:"relative" }}>
+              <img src={user.photoURL} alt="avatar" onClick={handleLogout}
+                title="點擊登出"
+                style={{ width:34, height:34, borderRadius:"50%", cursor:"pointer", border:"2px solid #ede9e4", transition:"opacity 0.2s" }}
+                onMouseEnter={e=>e.target.style.opacity=0.7} onMouseLeave={e=>e.target.style.opacity=1}
+              />
+            </div>
           </div>
         </div>
+
         <div style={{ display:"flex", background:"white", borderRadius:18, padding:5, marginBottom:16, border:"1.5px solid #ede9e4", boxShadow:"0 2px 10px rgba(0,0,0,0.05)" }}>
           {PERIODS.map((p,i) => {
             const k=PERIOD_KEYS[i]; const cnt=todos[k].filter(item=>item.type==="project"?!(item.subtasks?.every(s=>s.done)&&item.subtasks?.length>0):!item.done).length; const m=MORANDI[k];
@@ -456,12 +533,14 @@ export default function App() {
             );
           })}
         </div>
+
         {view==="calendar" && (
           <>
             <Calendar todos={todos} activeKey={periodKey} onSelectDay={(ds,items)=>{setCalSelected(ds);setCalItems(items);}}/>
             {calSelected && <DayDetail date={calSelected} items={calItems} onClose={()=>setCalSelected(null)}/>}
           </>
         )}
+
         {totalCount>0 && (
           <div style={{ background:"white", borderRadius:14, padding:"12px 16px", marginBottom:14, border:"1.5px solid #ede9e4", boxShadow:"0 2px 8px rgba(0,0,0,0.04)" }}>
             <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6, alignItems:"center" }}>
@@ -476,6 +555,7 @@ export default function App() {
             </div>
           </div>
         )}
+
         <div style={{ background:"white", borderRadius:16, padding:16, marginBottom:14, border:`1.5px solid ${theme.light}`, boxShadow:"0 2px 12px rgba(0,0,0,0.05)" }}>
           <div style={{ display:"flex", gap:6, marginBottom:12 }}>
             {[["single","✏️ 單一任務"],["project","📁 大項目"]].map(([t,l])=>(
@@ -507,6 +587,7 @@ export default function App() {
             </div>
           </div>
         </div>
+
         {view==="list" && (
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
             <div style={{ display:"flex", gap:4 }}>
@@ -517,6 +598,7 @@ export default function App() {
             {doneCount>0 && <button onClick={clearDone} style={{ background:"none",border:"none",color:"#b8afa8",fontSize:12,cursor:"pointer",fontFamily:"'Noto Sans TC',sans-serif" }}>清除已完成</button>}
           </div>
         )}
+
         {view==="list" && (
           <div>
             {filtered.length===0
@@ -531,6 +613,7 @@ export default function App() {
             }
           </div>
         )}
+
         <div style={{ textAlign:"center", marginTop:28, fontSize:11, color:"#cdc8c2" }}>
           雙擊文字可編輯 · 依重要性自動排序 · 資料同步至雲端 ☁️
         </div>
