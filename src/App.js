@@ -14,6 +14,7 @@ const MORANDI = {
 };
 
 const PRIORITY_ORDER = { high: 0, mid: 1, low: 2 };
+const PRIORITY_CYCLE = { high: "mid", mid: "low", low: "high" };
 const PRIORITY_META = {
   high: { label: "重要", bg: "#f0e8e8", color: "#b07070" },
   mid:  { label: "普通", bg: "#f0ecdf", color: "#9a8558" },
@@ -241,7 +242,6 @@ function DayDetail({ date, items, onToggle, onClose }) {
               background:"white", borderRadius:10, border:"1px solid #ede9e4",
               marginLeft: isSubtask ? 8 : 0,
             }}>
-              {/* 勾選框：單一任務和子任務才有，大項目本身不顯示 */}
               {(t.type !== "project" || isSubtask) && (
                 <button
                   onClick={() => handleToggle(t._category, isSubtask ? t._parentId : t.id, isSubtask ? t.id : null)}
@@ -298,13 +298,24 @@ function DateButton({ deadline, done, onChange }) {
   );
 }
 
-function SubtaskRow({ sub, theme, onToggle, onDelete, onEditText, onDeadlineChange }) {
+function SubtaskRow({ sub, index, total, theme, onToggle, onDelete, onEditText, onDeadlineChange, onMoveUp, onMoveDown }) {
   const [editing, setEditing] = useState(false);
   const [txt, setTxt] = useState(sub.text);
   const save = () => { if (txt.trim()) { onEditText(txt.trim()); setEditing(false); } };
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:4, padding:"8px 10px 8px 12px", borderLeft:`2px solid ${theme.light}`, marginLeft:8, marginBottom:4, background:sub.done?"#faf8f5":"white", borderRadius:"0 8px 8px 0" }}>
       <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+        {/* ↑↓ 排序按鈕 */}
+        <div style={{ display:"flex", flexDirection:"column", gap:1, flexShrink:0 }}>
+          <button onClick={onMoveUp} disabled={index===0} style={{
+            background:"none", border:"none", cursor:index===0?"not-allowed":"pointer",
+            color:index===0?"#e0dbd5":"#b8afa8", padding:"1px 3px", fontSize:11, lineHeight:1,
+          }}>▲</button>
+          <button onClick={onMoveDown} disabled={index===total-1} style={{
+            background:"none", border:"none", cursor:index===total-1?"not-allowed":"pointer",
+            color:index===total-1?"#e0dbd5":"#b8afa8", padding:"1px 3px", fontSize:11, lineHeight:1,
+          }}>▼</button>
+        </div>
         <button onClick={onToggle} style={{ width:18, height:18, borderRadius:5, border:`2px solid ${sub.done?theme.main:"#cdc8c2"}`, background:sub.done?theme.main:"white", cursor:"pointer", flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center" }}>
           {sub.done && <svg width="9" height="9" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
         </button>
@@ -317,7 +328,7 @@ function SubtaskRow({ sub, theme, onToggle, onDelete, onEditText, onDeadlineChan
           <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
         </button>
       </div>
-      <div style={{ paddingLeft:26 }}><DateButton deadline={sub.deadline} done={sub.done} onChange={onDeadlineChange}/></div>
+      <div style={{ paddingLeft:42 }}><DateButton deadline={sub.deadline} done={sub.done} onChange={onDeadlineChange}/></div>
     </div>
   );
 }
@@ -336,7 +347,9 @@ function ProjectItem({ item, theme, onUpdate, onDelete }) {
   const pm        = PRIORITY_META[item.priority] || PRIORITY_META.mid;
   const overdue   = !allDone && isOverdue(item.deadline);
   const dueToday  = !allDone && isDueToday(item.deadline);
+
   const saveTitle = () => { if (titleTxt.trim()) { onUpdate({ ...item, title: titleTxt.trim() }); setEditingTitle(false); } };
+  const cyclePriority = () => onUpdate({ ...item, priority: PRIORITY_CYCLE[item.priority] || "mid" });
   const addSubtask = () => {
     if (!newSub.trim()) return;
     const sub = { id:genId(), text:newSub.trim(), done:false, deadline:addingSubDeadline||null, createdAt:Date.now() };
@@ -345,6 +358,19 @@ function ProjectItem({ item, theme, onUpdate, onDelete }) {
   };
   const updateSub = (id, patch) => onUpdate({ ...item, subtasks: subtasks.map(s => s.id===id?{...s,...patch}:s) });
   const deleteSub = id => onUpdate({ ...item, subtasks: subtasks.filter(s => s.id!==id) });
+  const moveSubUp = idx => {
+    if (idx === 0) return;
+    const arr = [...subtasks];
+    [arr[idx-1], arr[idx]] = [arr[idx], arr[idx-1]];
+    onUpdate({ ...item, subtasks: arr });
+  };
+  const moveSubDown = idx => {
+    if (idx === subtasks.length-1) return;
+    const arr = [...subtasks];
+    [arr[idx], arr[idx+1]] = [arr[idx+1], arr[idx]];
+    onUpdate({ ...item, subtasks: arr });
+  };
+
   return (
     <div style={{ borderRadius:14, marginBottom:12, overflow:"hidden", border:`1.5px solid ${overdue?"#d4a8a0":allDone?"#e0dbd5":"#ede9e4"}`, boxShadow:allDone?"none":"0 2px 10px rgba(0,0,0,0.05)", background:allDone?"#faf8f5":"white" }}>
       <div style={{ padding:"13px 14px", background:allDone?"#f5f2ef":overdue?"#f7f0ee":theme.soft }}>
@@ -355,7 +381,8 @@ function ProjectItem({ item, theme, onUpdate, onDelete }) {
             ? <input autoFocus value={titleTxt} onChange={e=>setTitleTxt(e.target.value)} onBlur={saveTitle} onKeyDown={e=>{if(e.key==="Enter")saveTitle();if(e.key==="Escape")setEditingTitle(false);}} style={{ flex:1, border:`1.5px solid ${theme.main}`, borderRadius:8, padding:"4px 8px", fontSize:14, fontWeight:600, outline:"none", background:theme.soft }}/>
             : <span onDoubleClick={()=>setEditingTitle(true)} style={{ flex:1, fontSize:14, fontWeight:700, color:allDone?"#b8afa8":"#3a3530", textDecoration:allDone?"line-through":"none", cursor:"pointer" }}>{item.title}</span>
           }
-          <span style={{ fontSize:11, padding:"2px 8px", borderRadius:20, background:pm.bg, color:pm.color, fontWeight:700, flexShrink:0 }}>{pm.label}</span>
+          {/* 優先度標籤 - 點擊切換 */}
+          <button onClick={cyclePriority} title="點擊切換優先度" style={{ fontSize:11, padding:"2px 8px", borderRadius:20, background:pm.bg, color:pm.color, fontWeight:700, flexShrink:0, border:"none", cursor:"pointer" }}>{pm.label}</button>
           <button onClick={onDelete} style={{ background:"none", border:"none", cursor:"pointer", color:"#cdc8c2", padding:0 }}
             onMouseEnter={e=>e.currentTarget.style.color="#b07070"} onMouseLeave={e=>e.currentTarget.style.color="#cdc8c2"}>
             <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
@@ -379,12 +406,14 @@ function ProjectItem({ item, theme, onUpdate, onDelete }) {
         <div style={{ padding:"10px 14px 12px" }}>
           {subtasks.length === 0
             ? <div style={{ fontSize:12, color:"#cdc8c2", paddingLeft:8, paddingBottom:8 }}>還沒有子任務，在下方新增</div>
-            : subtasks.map(sub => (
-                <SubtaskRow key={sub.id} sub={sub} theme={theme}
+            : subtasks.map((sub, idx) => (
+                <SubtaskRow key={sub.id} sub={sub} index={idx} total={subtasks.length} theme={theme}
                   onToggle={()=>updateSub(sub.id,{done:!sub.done})}
                   onDelete={()=>deleteSub(sub.id)}
                   onEditText={txt=>updateSub(sub.id,{text:txt})}
                   onDeadlineChange={dl=>updateSub(sub.id,{deadline:dl})}
+                  onMoveUp={()=>moveSubUp(idx)}
+                  onMoveDown={()=>moveSubDown(idx)}
                 />
               ))
           }
@@ -417,6 +446,7 @@ function SingleItem({ item, theme, onUpdate, onDelete }) {
   const pm   = PRIORITY_META[item.priority] || PRIORITY_META.mid;
   const overdue  = !item.done && isOverdue(item.deadline);
   const dueToday = !item.done && isDueToday(item.deadline);
+  const cyclePriority = () => onUpdate({ ...item, priority: PRIORITY_CYCLE[item.priority] || "mid" });
   return (
     <div style={{ padding:"12px 14px", background:item.done?"#f8f6f3":overdue?"#f7f0ee":"white", borderRadius:12, marginBottom:8, border:`1.5px solid ${overdue&&!item.done?"#d4a8a0":item.done?"#e8e3de":"#ede9e4"}`, boxShadow:item.done?"none":"0 2px 8px rgba(0,0,0,0.04)" }}>
       <div style={{ display:"flex", alignItems:"center", gap:10 }}>
@@ -427,7 +457,8 @@ function SingleItem({ item, theme, onUpdate, onDelete }) {
           ? <input autoFocus value={txt} onChange={e=>setTxt(e.target.value)} onBlur={save} onKeyDown={e=>{if(e.key==="Enter")save();if(e.key==="Escape")setEditing(false);}} style={{ flex:1, border:`1.5px solid ${theme.main}`, borderRadius:8, padding:"4px 8px", fontSize:14, outline:"none" }}/>
           : <span onDoubleClick={()=>setEditing(true)} style={{ flex:1, fontSize:14, color:item.done?"#b8afa8":"#3a3530", textDecoration:item.done?"line-through":"none", cursor:"pointer", lineHeight:1.5 }}>{item.text}</span>
         }
-        <span style={{ fontSize:11, padding:"2px 8px", borderRadius:20, background:pm.bg, color:pm.color, fontWeight:700, flexShrink:0 }}>{pm.label}</span>
+        {/* 優先度標籤 - 點擊切換 */}
+        <button onClick={cyclePriority} title="點擊切換優先度" style={{ fontSize:11, padding:"2px 8px", borderRadius:20, background:pm.bg, color:pm.color, fontWeight:700, flexShrink:0, border:"none", cursor:"pointer" }}>{pm.label}</button>
         <button onClick={onDelete} style={{ background:"none", border:"none", cursor:"pointer", color:"#cdc8c2", padding:2, display:"flex", alignItems:"center" }}
           onMouseEnter={e=>e.currentTarget.style.color="#b07070"} onMouseLeave={e=>e.currentTarget.style.color="#cdc8c2"}>
           <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
@@ -608,12 +639,7 @@ export default function App() {
           <>
             <Calendar todos={todos} activeKey={periodKey} onSelectDay={(ds,items)=>{setCalSelected(ds);setCalItems(items);}}/>
             {calSelected && (
-              <DayDetail
-                date={calSelected}
-                items={calItems}
-                onToggle={handleCalToggle}
-                onClose={()=>setCalSelected(null)}
-              />
+              <DayDetail date={calSelected} items={calItems} onToggle={handleCalToggle} onClose={()=>setCalSelected(null)}/>
             )}
           </>
         )}
@@ -692,7 +718,7 @@ export default function App() {
         )}
 
         <div style={{ textAlign:"center", marginTop:24, fontSize:11, color:"#cdc8c2" }}>
-          雙擊文字可編輯 · 依重要性自動排序 · 資料同步至雲端 ☁️
+          點擊優先度標籤可切換 · 子任務可用 ▲▼ 排序 · 資料同步至雲端 ☁️
         </div>
       </div>
     </div>
