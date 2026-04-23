@@ -334,7 +334,7 @@ function SubtaskRow({ sub, index, total, theme, onToggle, onDelete, onEditText, 
 }
 
 function ProjectItem({ item, theme, onUpdate, onDelete }) {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleTxt, setTitleTxt] = useState(item.title);
   const [newSub, setNewSub] = useState("");
