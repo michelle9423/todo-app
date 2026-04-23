@@ -168,9 +168,9 @@ function Calendar({ todos, activeKey, onSelectDay }) {
           const day = dMap[ds];
           const isToday = ds === today;
           const isSel   = ds === selected;
-          const hasWork  = day?.work?.some(t => !t.done && !(t._parentId && (t.subtasks||[]).every(s=>s.done)));
-const hasStudy = day?.study?.some(t => !t.done && !(t._parentId && (t.subtasks||[]).every(s=>s.done)));
-const hasHouse = day?.house?.some(t => !t.done && !(t._parentId && (t.subtasks||[]).every(s=>s.done)));
+         const hasWork  = day?.work?.some(t => !t.done);
+         const hasStudy = day?.study?.some(t => !t.done);
+         const hasHouse = day?.house?.some(t => !t.done);
           const hasAny   = day && Object.values(day).flat().length > 0;
           const allDone  = hasAny && Object.values(day).flat().every(t => t.done || ((t.subtasks||[]).length>0 && (t.subtasks||[]).every(s=>s.done)));
           return (
