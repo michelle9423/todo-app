@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { db, auth, googleProvider } from "./firebase";
 import { ref, onValue, set } from "firebase/database";
-import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
+import { signInWithPopup, signOut, onAuthStateChanged, GoogleAuthProvider } from "firebase/auth";
 
 const PERIODS     = ["Work", "Study", "Home"];
 const PERIOD_KEYS = ["work", "study", "house"];
@@ -42,10 +42,7 @@ function fixArr(val) {
   return Object.values(val);
 }
 function fixItems(val) {
-  return fixArr(val).map(item => ({
-    ...item,
-    subtasks: fixArr(item.subtasks),
-  }));
+  return fixArr(val).map(item => ({ ...item, subtasks: fixArr(item.subtasks) }));
 }
 function toFirebase(todos) {
   const convert = items => {
@@ -57,11 +54,7 @@ function toFirebase(todos) {
     });
     return obj;
   };
-  return {
-    work:  convert(todos.work),
-    study: convert(todos.study),
-    house: convert(todos.house),
-  };
+  return { work: convert(todos.work), study: convert(todos.study), house: convert(todos.house) };
 }
 
 function sortItems(items) {
@@ -79,11 +72,44 @@ function sortItems(items) {
   });
 }
 
-function LoginScreen() {
+async function fetchAllCalendarEvents(accessToken) {
+  const today = new Date();
+  const timeMin = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 0, 0, 0).toISOString();
+  const timeMax = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59).toISOString();
+  try {
+    const listRes = await fetch("https://www.googleapis.com/calendar/v3/users/me/calendarList",
+      { headers: { Authorization: `Bearer ${accessToken}` } });
+    const listData = await listRes.json();
+    if (!listData.items) return [];
+    const results = await Promise.all(
+      listData.items.map(cal =>
+        fetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(cal.id)}/events?timeMin=${timeMin}&timeMax=${timeMax}&singleEvents=true&orderBy=startTime`,
+          { headers: { Authorization: `Bearer ${accessToken}` } })
+        .then(r => r.json())
+        .then(d => (d.items || []).map(e => ({
+          id: e.id,
+          title: e.summary || "(無標題)",
+          start: e.start?.dateTime || e.start?.date,
+          end: e.end?.dateTime || e.end?.date,
+          calendarName: cal.summary,
+          calendarColor: cal.backgroundColor || "#4285f4",
+          isAllDay: !e.start?.dateTime,
+        })))
+        .catch(() => [])
+      )
+    );
+    return results.flat().sort((a, b) => new Date(a.start) - new Date(b.start));
+  } catch (e) {
+    console.error("Calendar fetch error:", e);
+    return [];
+  }
+}
+
+function LoginScreen({ onLogin }) {
   const [loading, setLoading] = useState(false);
   const handleLogin = async () => {
     setLoading(true);
-    try { await signInWithPopup(auth, googleProvider); }
+    try { await onLogin(); }
     catch (e) { console.error(e); setLoading(false); }
   };
   return (
@@ -114,7 +140,64 @@ function LoginScreen() {
   );
 }
 
-function Calendar({ todos, activeKey, onSelectDay }) {
+function TodaySummary({ todos, gcalEvents }) {
+  const todayTodos = PERIOD_KEYS.flatMap(k =>
+    todos[k].filter(i => isDueToday(i.deadline) && !i.done).map(i => ({ ...i, _cat: k }))
+  );
+  const overdueTodos = PERIOD_KEYS.flatMap(k =>
+    todos[k].filter(i => isOverdue(i.deadline) && !i.done).map(i => ({ ...i, _cat: k }))
+  );
+  if (gcalEvents.length === 0 && todayTodos.length === 0 && overdueTodos.length === 0) return null;
+  return (
+    <div style={{ background:"white", borderRadius:16, padding:14, marginBottom:14, border:"1.5px solid #deeae5", boxShadow:"0 2px 12px rgba(0,0,0,0.05)" }}>
+      <div style={{ fontWeight:700, fontSize:14, color:"#3a3530", marginBottom:10 }}>☀️ 今日彙報</div>
+
+      {gcalEvents.length > 0 && (
+        <div style={{ marginBottom:10 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:"#b8afa8", marginBottom:6, letterSpacing:"0.5px" }}>📅 今日行程</div>
+          {gcalEvents.map(e => (
+            <div key={e.id} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:5, padding:"7px 10px", background:"#f8f8f8", borderRadius:10 }}>
+              <div style={{ width:8, height:8, borderRadius:"50%", background:e.calendarColor, flexShrink:0 }}/>
+              <span style={{ fontSize:12, color:"#5a5048", flex:1 }}>
+                <span style={{ color:"#b8afa8", marginRight:4 }}>
+                  {e.isAllDay ? "全天" : new Date(e.start).toLocaleTimeString("zh-TW", { hour:"2-digit", minute:"2-digit" })}
+                </span>
+                {e.title}
+              </span>
+              <span style={{ fontSize:10, color:"#b8afa8" }}>{e.calendarName}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {todayTodos.length > 0 && (
+        <div style={{ marginBottom: overdueTodos.length > 0 ? 8 : 0 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:"#b8afa8", marginBottom:6, letterSpacing:"0.5px" }}>⏰ 今日截止</div>
+          {todayTodos.map(i => (
+            <div key={i.id} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:5, padding:"7px 10px", background:"#f0ecdf", borderRadius:10 }}>
+              <span style={{ fontSize:12, color:"#9a8558", flex:1 }}>{i.title || i.text}</span>
+              <span style={{ fontSize:13 }}>{ICONS[i._cat]}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {overdueTodos.length > 0 && (
+        <div>
+          <div style={{ fontSize:11, fontWeight:700, color:"#b07070", marginBottom:6, letterSpacing:"0.5px" }}>⚠️ 逾期未完成</div>
+          {overdueTodos.map(i => (
+            <div key={i.id} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:5, padding:"7px 10px", background:"#f0e8e8", borderRadius:10 }}>
+              <span style={{ fontSize:12, color:"#b07070", flex:1 }}>{i.title || i.text}</span>
+              <span style={{ fontSize:13 }}>{ICONS[i._cat]}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Calendar({ todos, activeKey, gcalEvents, onSelectDay }) {
   const [curYear, setCurYear]   = useState(new Date().getFullYear());
   const [curMonth, setCurMonth] = useState(new Date().getMonth());
   const [selected, setSelected] = useState(null);
@@ -122,6 +205,8 @@ function Calendar({ todos, activeKey, onSelectDay }) {
   const firstDay    = new Date(curYear, curMonth, 1).getDay();
   const daysInMonth = new Date(curYear, curMonth + 1, 0).getDate();
   const accent = MORANDI[activeKey];
+
+  // Todo deadline map
   const dMap = {};
   const addToMap = (date, item, cat) => {
     if (!date) return;
@@ -138,17 +223,28 @@ function Calendar({ todos, activeKey, onSelectDay }) {
       }
     });
   });
+
+  // GCal event date map
+  const gcalMap = {};
+  gcalEvents.forEach(e => {
+    const ds = toDateStr(new Date(e.start));
+    if (!gcalMap[ds]) gcalMap[ds] = [];
+    gcalMap[ds].push(e);
+  });
+
   const prevMonth = () => curMonth === 0 ? (setCurYear(y=>y-1), setCurMonth(11)) : setCurMonth(m=>m-1);
   const nextMonth = () => curMonth === 11 ? (setCurYear(y=>y+1), setCurMonth(0)) : setCurMonth(m=>m+1);
   const cells = [];
   for (let i = 0; i < firstDay; i++) cells.push(null);
   for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
   const handleDay = d => {
     const ds = `${curYear}-${String(curMonth+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
     setSelected(ds);
     const flat = Object.entries(dMap[ds] || {}).flatMap(([k, arr]) => arr.map(t => ({ ...t, _category: k })));
-    onSelectDay && onSelectDay(ds, flat);
+    onSelectDay && onSelectDay(ds, flat, gcalMap[ds] || []);
   };
+
   return (
     <div style={{ background:"white", borderRadius:18, border:"1.5px solid #ede9e4", boxShadow:"0 2px 12px rgba(0,0,0,0.06)", overflow:"hidden", marginBottom:16 }}>
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"14px 20px", borderBottom:"1px solid #f0ece8", background:accent.soft }}>
@@ -166,30 +262,35 @@ function Calendar({ todos, activeKey, onSelectDay }) {
           if (!d) return <div key={i}/>;
           const ds = `${curYear}-${String(curMonth+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
           const day = dMap[ds];
+          const hasGcal = (gcalMap[ds] || []).length > 0;
           const isToday = ds === today;
           const isSel   = ds === selected;
-         const hasWork  = day?.work?.some(t => !t.done);
-         const hasStudy = day?.study?.some(t => !t.done);
-         const hasHouse = day?.house?.some(t => !t.done);
+          const hasWork  = day?.work?.some(t => !t.done);
+          const hasStudy = day?.study?.some(t => !t.done);
+          const hasHouse = day?.house?.some(t => !t.done);
           const hasAny   = day && Object.values(day).flat().length > 0;
           const allDone  = hasAny && Object.values(day).flat().every(t => t.done || ((t.subtasks||[]).length>0 && (t.subtasks||[]).every(s=>s.done)));
           return (
             <div key={i} onClick={() => handleDay(d)} style={{ textAlign:"center", padding:"6px 2px 8px", borderRadius:10, cursor:"pointer", background:isSel?accent.main:isToday?accent.light:"transparent", transition:"background 0.15s" }}>
               <span style={{ fontSize:13, fontWeight:isToday?700:400, color:isSel?"white":isToday?accent.text:"#4a4540" }}>{d}</span>
-              {hasAny && (
-                <div style={{ display:"flex", justifyContent:"center", gap:2, marginTop:3 }}>
-                  {allDone ? <div style={{ width:5,height:5,borderRadius:"50%", background:isSel?"rgba(255,255,255,0.7)":"#a8bfaa" }}/> : <>
-                    {hasWork  && <div style={{ width:5,height:5,borderRadius:"50%", background:isSel?"rgba(255,255,255,0.85)":MORANDI.work.dot  }}/>}
-                    {hasStudy && <div style={{ width:5,height:5,borderRadius:"50%", background:isSel?"rgba(255,255,255,0.85)":MORANDI.study.dot }}/>}
-                    {hasHouse && <div style={{ width:5,height:5,borderRadius:"50%", background:isSel?"rgba(255,255,255,0.85)":MORANDI.house.dot }}/>}
-                  </>}
-                </div>
-              )}
+              <div style={{ display:"flex", justifyContent:"center", gap:2, marginTop:3, minHeight:7 }}>
+                {hasGcal && <div style={{ width:5,height:5,borderRadius:"50%", background:isSel?"rgba(255,255,255,0.85)":"#4285f4" }}/>}
+                {hasAny && !allDone && <>
+                  {hasWork  && <div style={{ width:5,height:5,borderRadius:"50%", background:isSel?"rgba(255,255,255,0.85)":MORANDI.work.dot  }}/>}
+                  {hasStudy && <div style={{ width:5,height:5,borderRadius:"50%", background:isSel?"rgba(255,255,255,0.85)":MORANDI.study.dot }}/>}
+                  {hasHouse && <div style={{ width:5,height:5,borderRadius:"50%", background:isSel?"rgba(255,255,255,0.85)":MORANDI.house.dot }}/>}
+                </>}
+                {hasAny && allDone && <div style={{ width:5,height:5,borderRadius:"50%", background:isSel?"rgba(255,255,255,0.7)":"#a8bfaa" }}/>}
+              </div>
             </div>
           );
         })}
       </div>
-      <div style={{ display:"flex", gap:14, padding:"8px 20px 12px", borderTop:"1px solid #f0ece8", flexWrap:"wrap", alignItems:"center" }}>
+      <div style={{ display:"flex", gap:12, padding:"8px 20px 12px", borderTop:"1px solid #f0ece8", flexWrap:"wrap", alignItems:"center" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+          <div style={{ width:8,height:8,borderRadius:"50%", background:"#4285f4" }}/>
+          <span style={{ fontSize:11, color:"#6b7280" }}>行程</span>
+        </div>
         {PERIOD_KEYS.map(k => (
           <div key={k} style={{ display:"flex", alignItems:"center", gap:5 }}>
             <div style={{ width:8,height:8,borderRadius:"50%", background:MORANDI[k].dot }}/>
@@ -205,7 +306,7 @@ function Calendar({ todos, activeKey, onSelectDay }) {
   );
 }
 
-function DayDetail({ date, items, onToggle, onClose }) {
+function DayDetail({ date, items, gcalItems, onToggle, onClose }) {
   if (!date) return null;
   const [localItems, setLocalItems] = useState(items);
   useEffect(() => setLocalItems(items), [items]);
@@ -222,47 +323,65 @@ function DayDetail({ date, items, onToggle, onClose }) {
   return (
     <div style={{ background:"#faf8f5", border:"1.5px solid #e8e3de", borderRadius:14, padding:"14px 16px", marginBottom:16 }}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
-        <span style={{ fontWeight:700, fontSize:14, color:"#5a5048" }}>📅 {label} 的截止任務</span>
+        <span style={{ fontWeight:700, fontSize:14, color:"#5a5048" }}>📅 {label}</span>
         <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#b8afa8", fontSize:18 }}>×</button>
       </div>
-      {localItems.length === 0
-        ? <div style={{ fontSize:13, color:"#b8afa8" }}>這天沒有截止任務</div>
-        : localItems.map((t,i) => {
-          const cat = MORANDI[t._category] || MORANDI.work;
-          const catLabel = PERIODS[PERIOD_KEYS.indexOf(t._category)];
-          const isSubtask = !!t._parentTitle;
-          const isDone = isSubtask
-            ? t.done
-            : t.type === "project"
-              ? ((t.subtasks||[]).length > 0 && (t.subtasks||[]).every(s=>s.done))
-              : t.done;
-          return (
-            <div key={i} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:6,
-              padding: isSubtask ? "6px 10px 6px 28px" : "8px 10px",
-              background:"white", borderRadius:10, border:"1px solid #ede9e4",
-              marginLeft: isSubtask ? 8 : 0,
-            }}>
-              {(t.type !== "project" || isSubtask) && (
-                <button
-                  onClick={() => handleToggle(t._category, isSubtask ? t._parentId : t.id, isSubtask ? t.id : null)}
-                  style={{ width:18, height:18, borderRadius:5,
-                    border:`2px solid ${t.done?cat.main:"#cdc8c2"}`,
-                    background:t.done?cat.main:"white",
-                    cursor:"pointer", flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center",
-                  }}>
-                  {t.done && <svg width="9" height="9" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                </button>
-              )}
-              {t.type === "project" && !isSubtask && <span style={{ fontSize:13 }}>📁</span>}
-              <span style={{ flex:1, fontSize:13, color:isDone?"#b8afa8":"#3a3530", textDecoration:isDone?"line-through":"none" }}>
-                {isSubtask && <span style={{ color:"#b8afa8", fontSize:11 }}>{t._parentTitle} › </span>}
-                {t.title || t.text}
+
+      {/* Google Calendar 行程 */}
+      {gcalItems && gcalItems.length > 0 && (
+        <div style={{ marginBottom:10 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:"#b8afa8", marginBottom:6 }}>📅 今日行程</div>
+          {gcalItems.map(e => (
+            <div key={e.id} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:5, padding:"6px 10px", background:"#f0f4ff", borderRadius:10 }}>
+              <div style={{ width:7, height:7, borderRadius:"50%", background:e.calendarColor, flexShrink:0 }}/>
+              <span style={{ fontSize:12, color:"#5a5048", flex:1 }}>
+                <span style={{ color:"#9ca3af", marginRight:4 }}>
+                  {e.isAllDay ? "全天" : new Date(e.start).toLocaleTimeString("zh-TW", { hour:"2-digit", minute:"2-digit" })}
+                </span>
+                {e.title}
               </span>
-              <span style={{ fontSize:10, padding:"1px 6px", borderRadius:20, background:cat.light, color:cat.text, fontWeight:700 }}>{catLabel}</span>
+              <span style={{ fontSize:10, color:"#b8afa8" }}>{e.calendarName}</span>
             </div>
-          );
-        })
-      }
+          ))}
+        </div>
+      )}
+
+      {/* Todo 截止任務 */}
+      {localItems.length > 0 && (
+        <div>
+          {(gcalItems && gcalItems.length > 0) && <div style={{ fontSize:11, fontWeight:700, color:"#b8afa8", marginBottom:6 }}>✅ 截止任務</div>}
+          {localItems.map((t,i) => {
+            const cat = MORANDI[t._category] || MORANDI.work;
+            const catLabel = PERIODS[PERIOD_KEYS.indexOf(t._category)];
+            const isSubtask = !!t._parentTitle;
+            const isDone = isSubtask ? t.done : t.type === "project" ? ((t.subtasks||[]).length > 0 && (t.subtasks||[]).every(s=>s.done)) : t.done;
+            return (
+              <div key={i} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:6,
+                padding: isSubtask ? "6px 10px 6px 28px" : "8px 10px",
+                background:"white", borderRadius:10, border:"1px solid #ede9e4",
+                marginLeft: isSubtask ? 8 : 0,
+              }}>
+                {(t.type !== "project" || isSubtask) && (
+                  <button onClick={() => handleToggle(t._category, isSubtask ? t._parentId : t.id, isSubtask ? t.id : null)}
+                    style={{ width:18, height:18, borderRadius:5, border:`2px solid ${t.done?cat.main:"#cdc8c2"}`, background:t.done?cat.main:"white", cursor:"pointer", flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center" }}>
+                    {t.done && <svg width="9" height="9" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                  </button>
+                )}
+                {t.type === "project" && !isSubtask && <span style={{ fontSize:13 }}>📁</span>}
+                <span style={{ flex:1, fontSize:13, color:isDone?"#b8afa8":"#3a3530", textDecoration:isDone?"line-through":"none" }}>
+                  {isSubtask && <span style={{ color:"#b8afa8", fontSize:11 }}>{t._parentTitle} › </span>}
+                  {t.title || t.text}
+                </span>
+                <span style={{ fontSize:10, padding:"1px 6px", borderRadius:20, background:cat.light, color:cat.text, fontWeight:700 }}>{catLabel}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {(!gcalItems || gcalItems.length === 0) && localItems.length === 0 && (
+        <div style={{ fontSize:13, color:"#b8afa8" }}>這天沒有行程或截止任務</div>
+      )}
     </div>
   );
 }
@@ -305,16 +424,9 @@ function SubtaskRow({ sub, index, total, theme, onToggle, onDelete, onEditText, 
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:4, padding:"8px 10px 8px 12px", borderLeft:`2px solid ${theme.light}`, marginLeft:8, marginBottom:4, background:sub.done?"#faf8f5":"white", borderRadius:"0 8px 8px 0" }}>
       <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-        {/* ↑↓ 排序按鈕 */}
         <div style={{ display:"flex", flexDirection:"column", gap:1, flexShrink:0 }}>
-          <button onClick={onMoveUp} disabled={index===0} style={{
-            background:"none", border:"none", cursor:index===0?"not-allowed":"pointer",
-            color:index===0?"#e0dbd5":"#b8afa8", padding:"1px 3px", fontSize:11, lineHeight:1,
-          }}>▲</button>
-          <button onClick={onMoveDown} disabled={index===total-1} style={{
-            background:"none", border:"none", cursor:index===total-1?"not-allowed":"pointer",
-            color:index===total-1?"#e0dbd5":"#b8afa8", padding:"1px 3px", fontSize:11, lineHeight:1,
-          }}>▼</button>
+          <button onClick={onMoveUp} disabled={index===0} style={{ background:"none", border:"none", cursor:index===0?"not-allowed":"pointer", color:index===0?"#e0dbd5":"#b8afa8", padding:"1px 3px", fontSize:11, lineHeight:1 }}>▲</button>
+          <button onClick={onMoveDown} disabled={index===total-1} style={{ background:"none", border:"none", cursor:index===total-1?"not-allowed":"pointer", color:index===total-1?"#e0dbd5":"#b8afa8", padding:"1px 3px", fontSize:11, lineHeight:1 }}>▼</button>
         </div>
         <button onClick={onToggle} style={{ width:18, height:18, borderRadius:5, border:`2px solid ${sub.done?theme.main:"#cdc8c2"}`, background:sub.done?theme.main:"white", cursor:"pointer", flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center" }}>
           {sub.done && <svg width="9" height="9" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
@@ -347,7 +459,6 @@ function ProjectItem({ item, theme, onUpdate, onDelete }) {
   const pm        = PRIORITY_META[item.priority] || PRIORITY_META.mid;
   const overdue   = !allDone && isOverdue(item.deadline);
   const dueToday  = !allDone && isDueToday(item.deadline);
-
   const saveTitle = () => { if (titleTxt.trim()) { onUpdate({ ...item, title: titleTxt.trim() }); setEditingTitle(false); } };
   const cyclePriority = () => onUpdate({ ...item, priority: PRIORITY_CYCLE[item.priority] || "mid" });
   const addSubtask = () => {
@@ -358,19 +469,8 @@ function ProjectItem({ item, theme, onUpdate, onDelete }) {
   };
   const updateSub = (id, patch) => onUpdate({ ...item, subtasks: subtasks.map(s => s.id===id?{...s,...patch}:s) });
   const deleteSub = id => onUpdate({ ...item, subtasks: subtasks.filter(s => s.id!==id) });
-  const moveSubUp = idx => {
-    if (idx === 0) return;
-    const arr = [...subtasks];
-    [arr[idx-1], arr[idx]] = [arr[idx], arr[idx-1]];
-    onUpdate({ ...item, subtasks: arr });
-  };
-  const moveSubDown = idx => {
-    if (idx === subtasks.length-1) return;
-    const arr = [...subtasks];
-    [arr[idx], arr[idx+1]] = [arr[idx+1], arr[idx]];
-    onUpdate({ ...item, subtasks: arr });
-  };
-
+  const moveSubUp = idx => { if (idx===0) return; const arr=[...subtasks]; [arr[idx-1],arr[idx]]=[arr[idx],arr[idx-1]]; onUpdate({...item,subtasks:arr}); };
+  const moveSubDown = idx => { if (idx===subtasks.length-1) return; const arr=[...subtasks]; [arr[idx],arr[idx+1]]=[arr[idx+1],arr[idx]]; onUpdate({...item,subtasks:arr}); };
   return (
     <div style={{ borderRadius:14, marginBottom:12, overflow:"hidden", border:`1.5px solid ${overdue?"#d4a8a0":allDone?"#e0dbd5":"#ede9e4"}`, boxShadow:allDone?"none":"0 2px 10px rgba(0,0,0,0.05)", background:allDone?"#faf8f5":"white" }}>
       <div style={{ padding:"13px 14px", background:allDone?"#f5f2ef":overdue?"#f7f0ee":theme.soft }}>
@@ -381,7 +481,6 @@ function ProjectItem({ item, theme, onUpdate, onDelete }) {
             ? <input autoFocus value={titleTxt} onChange={e=>setTitleTxt(e.target.value)} onBlur={saveTitle} onKeyDown={e=>{if(e.key==="Enter")saveTitle();if(e.key==="Escape")setEditingTitle(false);}} style={{ flex:1, border:`1.5px solid ${theme.main}`, borderRadius:8, padding:"4px 8px", fontSize:14, fontWeight:600, outline:"none", background:theme.soft }}/>
             : <span onDoubleClick={()=>setEditingTitle(true)} style={{ flex:1, fontSize:14, fontWeight:700, color:allDone?"#b8afa8":"#3a3530", textDecoration:allDone?"line-through":"none", cursor:"pointer" }}>{item.title}</span>
           }
-          {/* 優先度標籤 - 點擊切換 */}
           <button onClick={cyclePriority} title="點擊切換優先度" style={{ fontSize:11, padding:"2px 8px", borderRadius:20, background:pm.bg, color:pm.color, fontWeight:700, flexShrink:0, border:"none", cursor:"pointer" }}>{pm.label}</button>
           <button onClick={onDelete} style={{ background:"none", border:"none", cursor:"pointer", color:"#cdc8c2", padding:0 }}
             onMouseEnter={e=>e.currentTarget.style.color="#b07070"} onMouseLeave={e=>e.currentTarget.style.color="#cdc8c2"}>
@@ -457,7 +556,6 @@ function SingleItem({ item, theme, onUpdate, onDelete }) {
           ? <input autoFocus value={txt} onChange={e=>setTxt(e.target.value)} onBlur={save} onKeyDown={e=>{if(e.key==="Enter")save();if(e.key==="Escape")setEditing(false);}} style={{ flex:1, border:`1.5px solid ${theme.main}`, borderRadius:8, padding:"4px 8px", fontSize:14, outline:"none" }}/>
           : <span onDoubleClick={()=>setEditing(true)} style={{ flex:1, fontSize:14, color:item.done?"#b8afa8":"#3a3530", textDecoration:item.done?"line-through":"none", cursor:"pointer", lineHeight:1.5 }}>{item.text}</span>
         }
-        {/* 優先度標籤 - 點擊切換 */}
         <button onClick={cyclePriority} title="點擊切換優先度" style={{ fontSize:11, padding:"2px 8px", borderRadius:20, background:pm.bg, color:pm.color, fontWeight:700, flexShrink:0, border:"none", cursor:"pointer" }}>{pm.label}</button>
         <button onClick={onDelete} style={{ background:"none", border:"none", cursor:"pointer", color:"#cdc8c2", padding:2, display:"flex", alignItems:"center" }}
           onMouseEnter={e=>e.currentTarget.style.color="#b07070"} onMouseLeave={e=>e.currentTarget.style.color="#cdc8c2"}>
@@ -483,26 +581,26 @@ export default function App() {
   const [filter, setFilter]       = useState("all");
   const [calSelected, setCalSelected] = useState(null);
   const [calItems, setCalItems]   = useState([]);
+  const [calGcalItems, setCalGcalItems] = useState([]);
+  const [gcalEvents, setGcalEvents] = useState([]);
 
   const periodKey = PERIOD_KEYS[activeTab];
   const theme     = MORANDI[periodKey];
 
+  // Auth
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, u => setUser(u || null));
     return () => unsub();
   }, []);
 
+  // Firebase todos
   useEffect(() => {
     if (!user) return;
     const todosRef = ref(db, `users/${user.uid}/todos`);
     const unsub = onValue(todosRef, snapshot => {
       const data = snapshot.val();
       if (data) {
-        setTodos({
-          work:  fixItems(data.work),
-          study: fixItems(data.study),
-          house: fixItems(data.house),
-        });
+        setTodos({ work: fixItems(data.work), study: fixItems(data.study), house: fixItems(data.house) });
       } else {
         setTodos({ work:[], study:[], house:[] });
       }
@@ -511,12 +609,42 @@ export default function App() {
     return () => unsub();
   }, [user]);
 
+  // Google Calendar events
+  useEffect(() => {
+    if (!user) return;
+    const token = localStorage.getItem("gcal_token");
+    if (!token) return;
+    fetchAllCalendarEvents(token)
+      .then(setGcalEvents)
+      .catch(err => {
+        console.error(err);
+        // token 可能過期，清除讓下次重新登入取得新 token
+        if (err?.status === 401) localStorage.removeItem("gcal_token");
+      });
+  }, [user]);
+
+  const handleLogin = async () => {
+    try {
+      const result = await signInWithPopup(auth, googleProvider);
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+      if (credential?.accessToken) {
+        localStorage.setItem("gcal_token", credential.accessToken);
+      }
+    } catch (e) {
+      console.error(e);
+      throw e;
+    }
+  };
+
   const saveTodos = updated => {
     if (!user) return;
     set(ref(db, `users/${user.uid}/todos`), toFirebase(updated));
   };
 
-  const handleLogout = () => signOut(auth);
+  const handleLogout = () => {
+    localStorage.removeItem("gcal_token");
+    signOut(auth);
+  };
 
   const handleCalToggle = (cat, itemId, subId) => {
     const list = todos[cat];
@@ -542,7 +670,7 @@ export default function App() {
     </div>
   );
 
-  if (user === null) return <LoginScreen />;
+  if (user === null) return <LoginScreen onLogin={handleLogin} />;
 
   const current = todos[periodKey];
   const countDone = items => items.reduce((n, item) => {
@@ -603,6 +731,8 @@ export default function App() {
         ::-webkit-scrollbar-thumb { background:#ddd8d2; border-radius:4px; }
       `}</style>
       <div style={{ width:"100%", maxWidth:560 }}>
+
+        {/* Header */}
         <div style={{ marginBottom:20, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
           <div>
             <div style={{ fontSize:11, color:"#b8afa8", marginBottom:2 }}>{dateStr}</div>
@@ -621,6 +751,10 @@ export default function App() {
           </div>
         </div>
 
+        {/* 今日彙報 */}
+        <TodaySummary todos={todos} gcalEvents={gcalEvents} />
+
+        {/* Tabs */}
         <div style={{ display:"flex", background:"white", borderRadius:18, padding:5, marginBottom:14, border:"1.5px solid #ede9e4", boxShadow:"0 2px 10px rgba(0,0,0,0.05)" }}>
           {PERIODS.map((p,i) => {
             const k=PERIOD_KEYS[i];
@@ -635,15 +769,20 @@ export default function App() {
           })}
         </div>
 
+        {/* Calendar view */}
         {view==="calendar" && (
           <>
-            <Calendar todos={todos} activeKey={periodKey} onSelectDay={(ds,items)=>{setCalSelected(ds);setCalItems(items);}}/>
+            <Calendar todos={todos} activeKey={periodKey} gcalEvents={gcalEvents}
+              onSelectDay={(ds, items, gcal) => { setCalSelected(ds); setCalItems(items); setCalGcalItems(gcal); }}
+            />
             {calSelected && (
-              <DayDetail date={calSelected} items={calItems} onToggle={handleCalToggle} onClose={()=>setCalSelected(null)}/>
+              <DayDetail date={calSelected} items={calItems} gcalItems={calGcalItems}
+                onToggle={handleCalToggle} onClose={()=>setCalSelected(null)}/>
             )}
           </>
         )}
 
+        {/* Progress */}
         {totalCount>0 && (
           <div style={{ background:"white", borderRadius:14, padding:"10px 14px", marginBottom:12, border:"1.5px solid #ede9e4", boxShadow:"0 2px 8px rgba(0,0,0,0.04)" }}>
             <div style={{ display:"flex", justifyContent:"space-between", marginBottom:5, alignItems:"center" }}>
@@ -659,6 +798,7 @@ export default function App() {
           </div>
         )}
 
+        {/* Add form */}
         <div style={{ background:"white", borderRadius:16, padding:14, marginBottom:12, border:`1.5px solid ${theme.light}`, boxShadow:"0 2px 12px rgba(0,0,0,0.05)" }}>
           <div style={{ display:"flex", gap:6, marginBottom:10 }}>
             {[["single","✏️ 單一任務"],["project","📁 大項目"]].map(([t,l])=>(
@@ -691,6 +831,7 @@ export default function App() {
           </div>
         </div>
 
+        {/* Filter */}
         {view==="list" && (
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
             <div style={{ display:"flex", gap:4 }}>
@@ -702,6 +843,7 @@ export default function App() {
           </div>
         )}
 
+        {/* List */}
         {view==="list" && (
           <div>
             {filtered.length===0
