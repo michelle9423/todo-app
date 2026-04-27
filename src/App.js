@@ -72,38 +72,9 @@ function sortItems(items) {
   });
 }
 
-// ── 修正一：自動刷新 Google Calendar token ──────────────────────────────────
-// 用 signInWithPopup + prompt: none 靜默取得新 token（不會跳出視窗）
-// 若靜默失敗（需要用戶互動）則沿用舊 token；只有在用戶主動登入時才會更新 token
-async function silentRefreshGcalToken() {
-  try {
-    const silentProvider = new GoogleAuthProvider();
-    silentProvider.addScope("https://www.googleapis.com/auth/calendar.readonly");
-    silentProvider.setCustomParameters({ prompt: "none" });
-    const result = await signInWithPopup(auth, silentProvider);
-    const credential = GoogleAuthProvider.credentialFromResult(result);
-    if (credential?.accessToken) {
-      localStorage.setItem("gcal_token", credential.accessToken);
-      localStorage.setItem("gcal_token_time", Date.now().toString());
-      return credential.accessToken;
-    }
-  } catch (e) {
-    // prompt:none 失敗是正常的（需要用戶互動時），靜默忽略
-  }
-  return localStorage.getItem("gcal_token");
-}
-
 async function getValidGcalToken() {
-  const token = localStorage.getItem("gcal_token");
-  const tokenTime = parseInt(localStorage.getItem("gcal_token_time") || "0");
-  const age = Date.now() - tokenTime;
-  // token 超過 45 分鐘就嘗試靜默刷新（Google access token 有效期約 1 小時）
-  if (!token || age > 45 * 60 * 1000) {
-    return await silentRefreshGcalToken();
-  }
-  return token;
+  return localStorage.getItem("gcal_token") || null;
 }
-// ────────────────────────────────────────────────────────────────────────────
 
 async function fetchAllCalendarEvents(accessToken) {
   const today = new Date();
