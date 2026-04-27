@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { db, auth, googleProvider } from "./firebase";
 import { ref, onValue, set } from "firebase/database";
 import { signInWithPopup, signOut, onAuthStateChanged, GoogleAuthProvider } from "firebase/auth";
@@ -72,6 +72,39 @@ function sortItems(items) {
   });
 }
 
+// ── 修正一：自動刷新 Google Calendar token ──────────────────────────────────
+// 用 signInWithPopup + prompt: none 靜默取得新 token（不會跳出視窗）
+// 若靜默失敗（需要用戶互動）則沿用舊 token；只有在用戶主動登入時才會更新 token
+async function silentRefreshGcalToken() {
+  try {
+    const silentProvider = new GoogleAuthProvider();
+    silentProvider.addScope("https://www.googleapis.com/auth/calendar.readonly");
+    silentProvider.setCustomParameters({ prompt: "none" });
+    const result = await signInWithPopup(auth, silentProvider);
+    const credential = GoogleAuthProvider.credentialFromResult(result);
+    if (credential?.accessToken) {
+      localStorage.setItem("gcal_token", credential.accessToken);
+      localStorage.setItem("gcal_token_time", Date.now().toString());
+      return credential.accessToken;
+    }
+  } catch (e) {
+    // prompt:none 失敗是正常的（需要用戶互動時），靜默忽略
+  }
+  return localStorage.getItem("gcal_token");
+}
+
+async function getValidGcalToken() {
+  const token = localStorage.getItem("gcal_token");
+  const tokenTime = parseInt(localStorage.getItem("gcal_token_time") || "0");
+  const age = Date.now() - tokenTime;
+  // token 超過 45 分鐘就嘗試靜默刷新（Google access token 有效期約 1 小時）
+  if (!token || age > 45 * 60 * 1000) {
+    return await silentRefreshGcalToken();
+  }
+  return token;
+}
+// ────────────────────────────────────────────────────────────────────────────
+
 async function fetchAllCalendarEvents(accessToken) {
   const today = new Date();
   const timeMin = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 0, 0, 0).toISOString();
@@ -80,6 +113,12 @@ async function fetchAllCalendarEvents(accessToken) {
     const listRes = await fetch("https://www.googleapis.com/calendar/v3/users/me/calendarList",
       { headers: { Authorization: `Bearer ${accessToken}` } });
     const listData = await listRes.json();
+    // token 過期時 Google 回傳 401
+    if (listData.error?.code === 401) {
+      localStorage.removeItem("gcal_token");
+      localStorage.removeItem("gcal_token_time");
+      return null; // 回傳 null 表示需要刷新
+    }
     if (!listData.items) return [];
     const results = await Promise.all(
       listData.items.map(cal =>
@@ -140,12 +179,41 @@ function LoginScreen({ onLogin }) {
   );
 }
 
+// ── 修正二：今日彙報納入大項目子任務 deadline ────────────────────────────────
 function TodaySummary({ todos, gcalEvents }) {
   const todayTodos = PERIOD_KEYS.flatMap(k =>
-    todos[k].filter(i => isDueToday(i.deadline) && !i.done).map(i => ({ ...i, _cat: k }))
+    todos[k].flatMap(i => {
+      if (i.type === "project") {
+        const results = [];
+        const projDone = (i.subtasks||[]).length > 0 && (i.subtasks||[]).every(s => s.done);
+        if (isDueToday(i.deadline) && !projDone)
+          results.push({ ...i, _cat: k, _displayText: i.title });
+        (i.subtasks||[]).forEach(s => {
+          if (isDueToday(s.deadline) && !s.done)
+            results.push({ ...s, _cat: k, _displayText: `${i.title} › ${s.text}` });
+        });
+        return results;
+      }
+      if (isDueToday(i.deadline) && !i.done) return [{ ...i, _cat: k, _displayText: i.text }];
+      return [];
+    })
   );
   const overdueTodos = PERIOD_KEYS.flatMap(k =>
-    todos[k].filter(i => isOverdue(i.deadline) && !i.done).map(i => ({ ...i, _cat: k }))
+    todos[k].flatMap(i => {
+      if (i.type === "project") {
+        const results = [];
+        const projDone = (i.subtasks||[]).length > 0 && (i.subtasks||[]).every(s => s.done);
+        if (isOverdue(i.deadline) && !projDone)
+          results.push({ ...i, _cat: k, _displayText: i.title });
+        (i.subtasks||[]).forEach(s => {
+          if (isOverdue(s.deadline) && !s.done)
+            results.push({ ...s, _cat: k, _displayText: `${i.title} › ${s.text}` });
+        });
+        return results;
+      }
+      if (isOverdue(i.deadline) && !i.done) return [{ ...i, _cat: k, _displayText: i.text }];
+      return [];
+    })
   );
   if (gcalEvents.length === 0 && todayTodos.length === 0 && overdueTodos.length === 0) return null;
   return (
@@ -173,9 +241,9 @@ function TodaySummary({ todos, gcalEvents }) {
       {todayTodos.length > 0 && (
         <div style={{ marginBottom: overdueTodos.length > 0 ? 8 : 0 }}>
           <div style={{ fontSize:11, fontWeight:700, color:"#b8afa8", marginBottom:6, letterSpacing:"0.5px" }}>⏰ 今日截止</div>
-          {todayTodos.map(i => (
-            <div key={i.id} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:5, padding:"7px 10px", background:"#f0ecdf", borderRadius:10 }}>
-              <span style={{ fontSize:12, color:"#9a8558", flex:1 }}>{i.title || i.text}</span>
+          {todayTodos.map((i, idx) => (
+            <div key={idx} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:5, padding:"7px 10px", background:"#f0ecdf", borderRadius:10 }}>
+              <span style={{ fontSize:12, color:"#9a8558", flex:1 }}>{i._displayText}</span>
               <span style={{ fontSize:13 }}>{ICONS[i._cat]}</span>
             </div>
           ))}
@@ -185,9 +253,9 @@ function TodaySummary({ todos, gcalEvents }) {
       {overdueTodos.length > 0 && (
         <div>
           <div style={{ fontSize:11, fontWeight:700, color:"#b07070", marginBottom:6, letterSpacing:"0.5px" }}>⚠️ 逾期未完成</div>
-          {overdueTodos.map(i => (
-            <div key={i.id} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:5, padding:"7px 10px", background:"#f0e8e8", borderRadius:10 }}>
-              <span style={{ fontSize:12, color:"#b07070", flex:1 }}>{i.title || i.text}</span>
+          {overdueTodos.map((i, idx) => (
+            <div key={idx} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:5, padding:"7px 10px", background:"#f0e8e8", borderRadius:10 }}>
+              <span style={{ fontSize:12, color:"#b07070", flex:1 }}>{i._displayText}</span>
               <span style={{ fontSize:13 }}>{ICONS[i._cat]}</span>
             </div>
           ))}
@@ -196,6 +264,7 @@ function TodaySummary({ todos, gcalEvents }) {
     </div>
   );
 }
+// ────────────────────────────────────────────────────────────────────────────
 
 function Calendar({ todos, activeKey, gcalEvents, onSelectDay }) {
   const [curYear, setCurYear]   = useState(new Date().getFullYear());
@@ -206,7 +275,6 @@ function Calendar({ todos, activeKey, gcalEvents, onSelectDay }) {
   const daysInMonth = new Date(curYear, curMonth + 1, 0).getDate();
   const accent = MORANDI[activeKey];
 
-  // Todo deadline map
   const dMap = {};
   const addToMap = (date, item, cat) => {
     if (!date) return;
@@ -224,7 +292,6 @@ function Calendar({ todos, activeKey, gcalEvents, onSelectDay }) {
     });
   });
 
-  // GCal event date map
   const gcalMap = {};
   gcalEvents.forEach(e => {
     const ds = toDateStr(new Date(e.start));
@@ -327,7 +394,6 @@ function DayDetail({ date, items, gcalItems, onToggle, onClose }) {
         <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:"#b8afa8", fontSize:18 }}>×</button>
       </div>
 
-      {/* Google Calendar 行程 */}
       {gcalItems && gcalItems.length > 0 && (
         <div style={{ marginBottom:10 }}>
           <div style={{ fontSize:11, fontWeight:700, color:"#b8afa8", marginBottom:6 }}>📅 今日行程</div>
@@ -346,7 +412,6 @@ function DayDetail({ date, items, gcalItems, onToggle, onClose }) {
         </div>
       )}
 
-      {/* Todo 截止任務 */}
       {localItems.length > 0 && (
         <div>
           {(gcalItems && gcalItems.length > 0) && <div style={{ fontSize:11, fontWeight:700, color:"#b8afa8", marginBottom:6 }}>✅ 截止任務</div>}
@@ -593,6 +658,27 @@ export default function App() {
     return () => unsub();
   }, []);
 
+  // ── 修正一：自動刷新 Calendar token ────────────────────────────────────────
+  const loadCalendarEvents = useCallback(async () => {
+    const token = await getValidGcalToken();
+    if (!token) return;
+    const events = await fetchAllCalendarEvents(token);
+    if (events === null) {
+      // token 過期且無法靜默刷新，等用戶下次登入
+      return;
+    }
+    setGcalEvents(events);
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    loadCalendarEvents();
+    // 每 40 分鐘自動重新抓取（順便刷新 token）
+    const interval = setInterval(loadCalendarEvents, 40 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [user, loadCalendarEvents]);
+  // ────────────────────────────────────────────────────────────────────────────
+
   // Firebase todos
   useEffect(() => {
     if (!user) return;
@@ -609,26 +695,13 @@ export default function App() {
     return () => unsub();
   }, [user]);
 
-  // Google Calendar events
-  useEffect(() => {
-    if (!user) return;
-    const token = localStorage.getItem("gcal_token");
-    if (!token) return;
-    fetchAllCalendarEvents(token)
-      .then(setGcalEvents)
-      .catch(err => {
-        console.error(err);
-        // token 可能過期，清除讓下次重新登入取得新 token
-        if (err?.status === 401) localStorage.removeItem("gcal_token");
-      });
-  }, [user]);
-
   const handleLogin = async () => {
     try {
       const result = await signInWithPopup(auth, googleProvider);
       const credential = GoogleAuthProvider.credentialFromResult(result);
       if (credential?.accessToken) {
         localStorage.setItem("gcal_token", credential.accessToken);
+        localStorage.setItem("gcal_token_time", Date.now().toString());
       }
     } catch (e) {
       console.error(e);
@@ -643,6 +716,7 @@ export default function App() {
 
   const handleLogout = () => {
     localStorage.removeItem("gcal_token");
+    localStorage.removeItem("gcal_token_time");
     signOut(auth);
   };
 
