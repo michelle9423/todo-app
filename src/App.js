@@ -76,10 +76,9 @@ async function getValidGcalToken() {
   return localStorage.getItem("gcal_token") || null;
 }
 
-async function fetchAllCalendarEvents(accessToken) {
-  const today = new Date();
-  const timeMin = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 0, 0, 0).toISOString();
-  const timeMax = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59).toISOString();
+async function fetchAllCalendarEvents(accessToken, date = new Date()) {
+  const timeMin = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0).toISOString();
+  const timeMax = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59).toISOString();
   try {
     const listRes = await fetch("https://www.googleapis.com/calendar/v3/users/me/calendarList",
       { headers: { Authorization: `Bearer ${accessToken}` } });
@@ -88,7 +87,7 @@ async function fetchAllCalendarEvents(accessToken) {
     if (listData.error?.code === 401) {
       localStorage.removeItem("gcal_token");
       localStorage.removeItem("gcal_token_time");
-      return null; // 回傳 null 表示需要刷新
+      return null;
     }
     if (!listData.items) return [];
     const results = await Promise.all(
@@ -150,7 +149,6 @@ function LoginScreen({ onLogin }) {
   );
 }
 
-// ── 修正二：今日彙報納入大項目子任務 deadline ────────────────────────────────
 function TodaySummary({ todos, gcalEvents }) {
   const todayTodos = PERIOD_KEYS.flatMap(k =>
     todos[k].flatMap(i => {
@@ -235,7 +233,6 @@ function TodaySummary({ todos, gcalEvents }) {
     </div>
   );
 }
-// ────────────────────────────────────────────────────────────────────────────
 
 function Calendar({ todos, activeKey, gcalEvents, onSelectDay }) {
   const [curYear, setCurYear]   = useState(new Date().getFullYear());
@@ -629,13 +626,12 @@ export default function App() {
     return () => unsub();
   }, []);
 
-  // ── 修正一：自動刷新 Calendar token ────────────────────────────────────────
   const loadCalendarEvents = useCallback(async () => {
     const token = await getValidGcalToken();
     if (!token) return;
     const events = await fetchAllCalendarEvents(token);
     if (events === null) {
-      // token 過期且無法靜默刷新，等用戶下次登入
+      setGcalEvents([]);
       return;
     }
     setGcalEvents(events);
@@ -644,11 +640,9 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
     loadCalendarEvents();
-    // 每 40 分鐘自動重新抓取（順便刷新 token）
     const interval = setInterval(loadCalendarEvents, 40 * 60 * 1000);
     return () => clearInterval(interval);
   }, [user, loadCalendarEvents]);
-  // ────────────────────────────────────────────────────────────────────────────
 
   // Firebase todos
   useEffect(() => {
@@ -689,6 +683,19 @@ export default function App() {
     localStorage.removeItem("gcal_token");
     localStorage.removeItem("gcal_token_time");
     signOut(auth);
+  };
+
+  const handleCalDaySelect = async (ds, items, gcal) => {
+    setCalSelected(ds);
+    setCalItems(items);
+    const token = await getValidGcalToken();
+    if (token) {
+      const dateObj = new Date(ds + "T00:00:00");
+      const events = await fetchAllCalendarEvents(token, dateObj);
+      setCalGcalItems(events || []);
+    } else {
+      setCalGcalItems(gcal);
+    }
   };
 
   const handleCalToggle = (cat, itemId, subId) => {
@@ -818,7 +825,7 @@ export default function App() {
         {view==="calendar" && (
           <>
             <Calendar todos={todos} activeKey={periodKey} gcalEvents={gcalEvents}
-              onSelectDay={(ds, items, gcal) => { setCalSelected(ds); setCalItems(items); setCalGcalItems(gcal); }}
+              onSelectDay={handleCalDaySelect}
             />
             {calSelected && (
               <DayDetail date={calSelected} items={calItems} gcalItems={calGcalItems}
