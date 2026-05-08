@@ -76,14 +76,14 @@ async function getValidGcalToken() {
   return localStorage.getItem("gcal_token") || null;
 }
 
-async function fetchAllCalendarEvents(accessToken, date = new Date()) {
-  const timeMin = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0).toISOString();
-  const timeMax = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59).toISOString();
+// ★ 改：接受 year, month 參數，抓整個月的行程
+async function fetchAllCalendarEvents(accessToken, year, month) {
+  const timeMin = new Date(year, month, 1, 0, 0, 0).toISOString();
+  const timeMax = new Date(year, month + 1, 0, 23, 59, 59).toISOString();
   try {
     const listRes = await fetch("https://www.googleapis.com/calendar/v3/users/me/calendarList",
       { headers: { Authorization: `Bearer ${accessToken}` } });
     const listData = await listRes.json();
-    // token 過期時 Google 回傳 401
     if (listData.error?.code === 401) {
       localStorage.removeItem("gcal_token");
       localStorage.removeItem("gcal_token_time");
@@ -112,6 +112,17 @@ async function fetchAllCalendarEvents(accessToken, date = new Date()) {
     console.error("Calendar fetch error:", e);
     return [];
   }
+}
+
+// ★ 新：從 gcalEvents 篩出今天的事件（給 TodaySummary 用）
+function getTodayGcalEvents(gcalEvents) {
+  const today = TODAY();
+  return gcalEvents.filter(e => {
+    const ds = e.isAllDay
+      ? e.start.slice(0, 10)
+      : toDateStr(new Date(e.start));
+    return ds === today;
+  });
 }
 
 function LoginScreen({ onLogin }) {
@@ -150,6 +161,9 @@ function LoginScreen({ onLogin }) {
 }
 
 function TodaySummary({ todos, gcalEvents }) {
+  // ★ 改：從整月事件中篩出今天的
+  const todayGcalEvents = getTodayGcalEvents(gcalEvents);
+
   const todayTodos = PERIOD_KEYS.flatMap(k =>
     todos[k].flatMap(i => {
       if (i.type === "project") {
@@ -184,15 +198,15 @@ function TodaySummary({ todos, gcalEvents }) {
       return [];
     })
   );
-  if (gcalEvents.length === 0 && todayTodos.length === 0 && overdueTodos.length === 0) return null;
+  if (todayGcalEvents.length === 0 && todayTodos.length === 0 && overdueTodos.length === 0) return null;
   return (
     <div style={{ background:"white", borderRadius:16, padding:14, marginBottom:14, border:"1.5px solid #deeae5", boxShadow:"0 2px 12px rgba(0,0,0,0.05)" }}>
       <div style={{ fontWeight:700, fontSize:14, color:"#3a3530", marginBottom:10 }}>☀️ 今日彙報</div>
 
-      {gcalEvents.length > 0 && (
+      {todayGcalEvents.length > 0 && (
         <div style={{ marginBottom:10 }}>
           <div style={{ fontSize:11, fontWeight:700, color:"#b8afa8", marginBottom:6, letterSpacing:"0.5px" }}>📅 今日行程</div>
-          {gcalEvents.map(e => (
+          {todayGcalEvents.map(e => (
             <div key={e.id} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:5, padding:"7px 10px", background:"#f8f8f8", borderRadius:10 }}>
               <div style={{ width:8, height:8, borderRadius:"50%", background:e.calendarColor, flexShrink:0 }}/>
               <span style={{ fontSize:12, color:"#5a5048", flex:1 }}>
@@ -234,7 +248,8 @@ function TodaySummary({ todos, gcalEvents }) {
   );
 }
 
-function Calendar({ todos, activeKey, gcalEvents, onSelectDay }) {
+// ★ 改：新增 onMonthChange prop，切換月份時通知父層
+function Calendar({ todos, activeKey, gcalEvents, onSelectDay, onMonthChange }) {
   const [curYear, setCurYear]   = useState(new Date().getFullYear());
   const [curMonth, setCurMonth] = useState(new Date().getMonth());
   const [selected, setSelected] = useState(null);
@@ -260,15 +275,26 @@ function Calendar({ todos, activeKey, gcalEvents, onSelectDay }) {
     });
   });
 
+  // ★ 改：全天事件用 slice(0,10) 避免時區偏移
   const gcalMap = {};
   gcalEvents.forEach(e => {
-    const ds = toDateStr(new Date(e.start));
+    const ds = e.isAllDay ? e.start.slice(0, 10) : toDateStr(new Date(e.start));
     if (!gcalMap[ds]) gcalMap[ds] = [];
     gcalMap[ds].push(e);
   });
 
-  const prevMonth = () => curMonth === 0 ? (setCurYear(y=>y-1), setCurMonth(11)) : setCurMonth(m=>m-1);
-  const nextMonth = () => curMonth === 11 ? (setCurYear(y=>y+1), setCurMonth(0)) : setCurMonth(m=>m+1);
+  const prevMonth = () => {
+    let y = curYear, m = curMonth;
+    if (m === 0) { y--; m = 11; } else { m--; }
+    setCurYear(y); setCurMonth(m);
+    onMonthChange && onMonthChange(y, m);
+  };
+  const nextMonth = () => {
+    let y = curYear, m = curMonth;
+    if (m === 11) { y++; m = 0; } else { m++; }
+    setCurYear(y); setCurMonth(m);
+    onMonthChange && onMonthChange(y, m);
+  };
   const cells = [];
   for (let i = 0; i < firstDay; i++) cells.push(null);
   for (let d = 1; d <= daysInMonth; d++) cells.push(d);
@@ -626,10 +652,13 @@ export default function App() {
     return () => unsub();
   }, []);
 
-  const loadCalendarEvents = useCallback(async () => {
+  // ★ 改：loadCalendarEvents 接受 year, month，預設為當月
+  const loadCalendarEvents = useCallback(async (year, month) => {
     const token = await getValidGcalToken();
     if (!token) return;
-    const events = await fetchAllCalendarEvents(token);
+    const y = year  ?? new Date().getFullYear();
+    const m = month ?? new Date().getMonth();
+    const events = await fetchAllCalendarEvents(token, y, m);
     if (events === null) {
       setGcalEvents([]);
       return;
@@ -640,7 +669,7 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
     loadCalendarEvents();
-    const interval = setInterval(loadCalendarEvents, 40 * 60 * 1000);
+    const interval = setInterval(() => loadCalendarEvents(), 40 * 60 * 1000);
     return () => clearInterval(interval);
   }, [user, loadCalendarEvents]);
 
@@ -683,19 +712,6 @@ export default function App() {
     localStorage.removeItem("gcal_token");
     localStorage.removeItem("gcal_token_time");
     signOut(auth);
-  };
-
-  const handleCalDaySelect = async (ds, items, gcal) => {
-    setCalSelected(ds);
-    setCalItems(items);
-    const token = await getValidGcalToken();
-    if (token) {
-      const dateObj = new Date(ds + "T00:00:00");
-      const events = await fetchAllCalendarEvents(token, dateObj);
-      setCalGcalItems(events || []);
-    } else {
-      setCalGcalItems(gcal);
-    }
   };
 
   const handleCalToggle = (cat, itemId, subId) => {
@@ -824,8 +840,12 @@ export default function App() {
         {/* Calendar view */}
         {view==="calendar" && (
           <>
-            <Calendar todos={todos} activeKey={periodKey} gcalEvents={gcalEvents}
-              onSelectDay={handleCalDaySelect}
+            <Calendar
+              todos={todos}
+              activeKey={periodKey}
+              gcalEvents={gcalEvents}
+              onSelectDay={(ds, items, gcal) => { setCalSelected(ds); setCalItems(items); setCalGcalItems(gcal); }}
+              onMonthChange={(y, m) => loadCalendarEvents(y, m)}
             />
             {calSelected && (
               <DayDetail date={calSelected} items={calItems} gcalItems={calGcalItems}
