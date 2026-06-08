@@ -76,14 +76,15 @@ async function getValidGcalToken() {
   return localStorage.getItem("gcal_token") || null;
 }
 
-// ★ 改：接受 year, month 參數，抓整個月的行程
-async function fetchAllCalendarEvents(accessToken, year, month) {
-  const timeMin = new Date(year, month, 1, 0, 0, 0).toISOString();
-  const timeMax = new Date(year, month + 1, 0, 23, 59, 59).toISOString();
+async function fetchAllCalendarEvents(accessToken) {
+  const today = new Date();
+  const timeMin = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 0, 0, 0).toISOString();
+  const timeMax = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59).toISOString();
   try {
     const listRes = await fetch("https://www.googleapis.com/calendar/v3/users/me/calendarList",
       { headers: { Authorization: `Bearer ${accessToken}` } });
     const listData = await listRes.json();
+    // token 過期時 Google 回傳 401
     if (listData.error?.code === 401) {
       localStorage.removeItem("gcal_token");
       localStorage.removeItem("gcal_token_time");
@@ -112,17 +113,6 @@ async function fetchAllCalendarEvents(accessToken, year, month) {
     console.error("Calendar fetch error:", e);
     return [];
   }
-}
-
-// ★ 新：從 gcalEvents 篩出今天的事件（給 TodaySummary 用）
-function getTodayGcalEvents(gcalEvents) {
-  const today = TODAY();
-  return gcalEvents.filter(e => {
-    const ds = e.isAllDay
-      ? e.start.slice(0, 10)
-      : toDateStr(new Date(e.start));
-    return ds === today;
-  });
 }
 
 function LoginScreen({ onLogin }) {
@@ -160,57 +150,92 @@ function LoginScreen({ onLogin }) {
   );
 }
 
-function TodaySummary({ todos, gcalEvents }) {
-  // ★ 改：從整月事件中篩出今天的
-  const todayGcalEvents = getTodayGcalEvents(gcalEvents);
+function TodaySummary({ todos, gcalEvents, onToggle }) {
+  const buildList = (filterFn) =>
+    PERIOD_KEYS.flatMap(k =>
+      todos[k].flatMap(i => {
+        if (i.type === "project") {
+          const results = [];
+          const projDone = (i.subtasks||[]).length > 0 && (i.subtasks||[]).every(s => s.done);
+          if (filterFn(i.deadline) && !projDone)
+            results.push({ ...i, _cat: k, _isProject: true, _subId: null });
+          (i.subtasks||[]).forEach(s => {
+            if (filterFn(s.deadline) && !s.done)
+              results.push({ ...s, _cat: k, _isProject: false, _parentId: i.id, _parentTitle: i.title, _subId: s.id });
+          });
+          return results;
+        }
+        if (filterFn(i.deadline) && !i.done)
+          return [{ ...i, _cat: k, _isProject: false, _subId: null }];
+        return [];
+      })
+    );
 
-  const todayTodos = PERIOD_KEYS.flatMap(k =>
-    todos[k].flatMap(i => {
-      if (i.type === "project") {
-        const results = [];
-        const projDone = (i.subtasks||[]).length > 0 && (i.subtasks||[]).every(s => s.done);
-        if (isDueToday(i.deadline) && !projDone)
-          results.push({ ...i, _cat: k, _displayText: i.title });
-        (i.subtasks||[]).forEach(s => {
-          if (isDueToday(s.deadline) && !s.done)
-            results.push({ ...s, _cat: k, _displayText: `${i.title} › ${s.text}` });
-        });
-        return results;
-      }
-      if (isDueToday(i.deadline) && !i.done) return [{ ...i, _cat: k, _displayText: i.text }];
-      return [];
-    })
-  );
-  const overdueTodos = PERIOD_KEYS.flatMap(k =>
-    todos[k].flatMap(i => {
-      if (i.type === "project") {
-        const results = [];
-        const projDone = (i.subtasks||[]).length > 0 && (i.subtasks||[]).every(s => s.done);
-        if (isOverdue(i.deadline) && !projDone)
-          results.push({ ...i, _cat: k, _displayText: i.title });
-        (i.subtasks||[]).forEach(s => {
-          if (isOverdue(s.deadline) && !s.done)
-            results.push({ ...s, _cat: k, _displayText: `${i.title} › ${s.text}` });
-        });
-        return results;
-      }
-      if (isOverdue(i.deadline) && !i.done) return [{ ...i, _cat: k, _displayText: i.text }];
-      return [];
-    })
-  );
-  if (todayGcalEvents.length === 0 && todayTodos.length === 0 && overdueTodos.length === 0) return null;
+  const [localTodayTodos, setLocalTodayTodos] = useState([]);
+  const [localOverdueTodos, setLocalOverdueTodos] = useState([]);
+
+  useEffect(() => {
+    setLocalTodayTodos(buildList(isDueToday));
+    setLocalOverdueTodos(buildList(isOverdue));
+  }, [todos]);
+
+  const handleToggle = (item) => {
+    const cat = item._cat;
+    const itemId = item._isProject ? item.id : (item._parentId || item.id);
+    const subId = item._subId;
+    // optimistic local update
+    const toggle = arr => arr.map(t => {
+      if (subId) return t._subId === subId ? { ...t, done: !t.done } : t;
+      return t.id === item.id && !t._subId ? { ...t, done: !t.done } : t;
+    });
+    setLocalTodayTodos(prev => toggle(prev));
+    setLocalOverdueTodos(prev => toggle(prev));
+    onToggle(cat, itemId, subId);
+  };
+
+  const renderItem = (t, idx, bgColor, textColor) => {
+    const cat = MORANDI[t._cat] || MORANDI.work;
+    const catLabel = PERIODS[PERIOD_KEYS.indexOf(t._cat)];
+    const isSubtask = !!t._parentTitle;
+    const isDone = t.done || (t._isProject && (t.subtasks||[]).length > 0 && (t.subtasks||[]).every(s => s.done));
+    const canCheck = !t._isProject || isSubtask;
+    return (
+      <div key={idx} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:6,
+        padding: isSubtask ? "6px 10px 6px 28px" : "8px 10px",
+        background:"white", borderRadius:10, border:"1px solid #ede9e4",
+        marginLeft: isSubtask ? 8 : 0,
+        opacity: isDone ? 0.55 : 1,
+      }}>
+        {canCheck && (
+          <button onClick={() => handleToggle(t)}
+            style={{ width:18, height:18, borderRadius:5, border:`2px solid ${isDone?cat.main:"#cdc8c2"}`, background:isDone?cat.main:"white", cursor:"pointer", flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center" }}>
+            {isDone && <svg width="9" height="9" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+          </button>
+        )}
+        {t._isProject && !isSubtask && <span style={{ fontSize:13, flexShrink:0 }}>📁</span>}
+        <span style={{ flex:1, fontSize:13, color:isDone?"#b8afa8":"#3a3530", textDecoration:isDone?"line-through":"none" }}>
+          {isSubtask && <span style={{ color:"#b8afa8", fontSize:11 }}>{t._parentTitle} › </span>}
+          {t.title || t.text}
+        </span>
+        <span style={{ fontSize:10, padding:"1px 6px", borderRadius:20, background:cat.light, color:cat.text, fontWeight:700, flexShrink:0 }}>{catLabel}</span>
+      </div>
+    );
+  };
+
+  if (gcalEvents.length === 0 && localTodayTodos.length === 0 && localOverdueTodos.length === 0) return null;
+
   return (
     <div style={{ background:"white", borderRadius:16, padding:14, marginBottom:14, border:"1.5px solid #deeae5", boxShadow:"0 2px 12px rgba(0,0,0,0.05)" }}>
       <div style={{ fontWeight:700, fontSize:14, color:"#3a3530", marginBottom:10 }}>☀️ 今日彙報</div>
 
-      {todayGcalEvents.length > 0 && (
+      {gcalEvents.length > 0 && (
         <div style={{ marginBottom:10 }}>
           <div style={{ fontSize:11, fontWeight:700, color:"#b8afa8", marginBottom:6, letterSpacing:"0.5px" }}>📅 今日行程</div>
-          {todayGcalEvents.map(e => (
-            <div key={e.id} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:5, padding:"7px 10px", background:"#f8f8f8", borderRadius:10 }}>
-              <div style={{ width:8, height:8, borderRadius:"50%", background:e.calendarColor, flexShrink:0 }}/>
+          {gcalEvents.map(e => (
+            <div key={e.id} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:5, padding:"7px 10px", background:"#f0f4ff", borderRadius:10 }}>
+              <div style={{ width:7, height:7, borderRadius:"50%", background:e.calendarColor, flexShrink:0 }}/>
               <span style={{ fontSize:12, color:"#5a5048", flex:1 }}>
-                <span style={{ color:"#b8afa8", marginRight:4 }}>
+                <span style={{ color:"#9ca3af", marginRight:4 }}>
                   {e.isAllDay ? "全天" : new Date(e.start).toLocaleTimeString("zh-TW", { hour:"2-digit", minute:"2-digit" })}
                 </span>
                 {e.title}
@@ -221,35 +246,24 @@ function TodaySummary({ todos, gcalEvents }) {
         </div>
       )}
 
-      {todayTodos.length > 0 && (
-        <div style={{ marginBottom: overdueTodos.length > 0 ? 8 : 0 }}>
-          <div style={{ fontSize:11, fontWeight:700, color:"#b8afa8", marginBottom:6, letterSpacing:"0.5px" }}>⏰ 今日截止</div>
-          {todayTodos.map((i, idx) => (
-            <div key={idx} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:5, padding:"7px 10px", background:"#f0ecdf", borderRadius:10 }}>
-              <span style={{ fontSize:12, color:"#9a8558", flex:1 }}>{i._displayText}</span>
-              <span style={{ fontSize:13 }}>{ICONS[i._cat]}</span>
-            </div>
-          ))}
+      {localTodayTodos.length > 0 && (
+        <div style={{ marginBottom: localOverdueTodos.length > 0 ? 8 : 0 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:"#b8afa8", marginBottom:6, letterSpacing:"0.5px" }}>⏰ 截止任務</div>
+          {localTodayTodos.map((t, idx) => renderItem(t, idx))}
         </div>
       )}
 
-      {overdueTodos.length > 0 && (
+      {localOverdueTodos.length > 0 && (
         <div>
           <div style={{ fontSize:11, fontWeight:700, color:"#b07070", marginBottom:6, letterSpacing:"0.5px" }}>⚠️ 逾期未完成</div>
-          {overdueTodos.map((i, idx) => (
-            <div key={idx} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:5, padding:"7px 10px", background:"#f0e8e8", borderRadius:10 }}>
-              <span style={{ fontSize:12, color:"#b07070", flex:1 }}>{i._displayText}</span>
-              <span style={{ fontSize:13 }}>{ICONS[i._cat]}</span>
-            </div>
-          ))}
+          {localOverdueTodos.map((t, idx) => renderItem(t, idx))}
         </div>
       )}
     </div>
   );
 }
 
-// ★ 改：新增 onMonthChange prop，切換月份時通知父層
-function Calendar({ todos, activeKey, gcalEvents, onSelectDay, onMonthChange }) {
+function Calendar({ todos, activeKey, gcalEvents, onSelectDay }) {
   const [curYear, setCurYear]   = useState(new Date().getFullYear());
   const [curMonth, setCurMonth] = useState(new Date().getMonth());
   const [selected, setSelected] = useState(null);
@@ -275,26 +289,15 @@ function Calendar({ todos, activeKey, gcalEvents, onSelectDay, onMonthChange }) 
     });
   });
 
-  // ★ 改：全天事件用 slice(0,10) 避免時區偏移
   const gcalMap = {};
   gcalEvents.forEach(e => {
-    const ds = e.isAllDay ? e.start.slice(0, 10) : toDateStr(new Date(e.start));
+    const ds = toDateStr(new Date(e.start));
     if (!gcalMap[ds]) gcalMap[ds] = [];
     gcalMap[ds].push(e);
   });
 
-  const prevMonth = () => {
-    let y = curYear, m = curMonth;
-    if (m === 0) { y--; m = 11; } else { m--; }
-    setCurYear(y); setCurMonth(m);
-    onMonthChange && onMonthChange(y, m);
-  };
-  const nextMonth = () => {
-    let y = curYear, m = curMonth;
-    if (m === 11) { y++; m = 0; } else { m++; }
-    setCurYear(y); setCurMonth(m);
-    onMonthChange && onMonthChange(y, m);
-  };
+  const prevMonth = () => curMonth === 0 ? (setCurYear(y=>y-1), setCurMonth(11)) : setCurMonth(m=>m-1);
+  const nextMonth = () => curMonth === 11 ? (setCurYear(y=>y+1), setCurMonth(0)) : setCurMonth(m=>m+1);
   const cells = [];
   for (let i = 0; i < firstDay; i++) cells.push(null);
   for (let d = 1; d <= daysInMonth; d++) cells.push(d);
@@ -637,7 +640,7 @@ export default function App() {
   const [inputText, setInputText] = useState("");
   const [priority, setPriority]   = useState("high");
   const [deadline, setDeadline]   = useState("");
-  const [filter, setFilter]       = useState("all");
+  const [filter, setFilter]       = useState("todo");
   const [calSelected, setCalSelected] = useState(null);
   const [calItems, setCalItems]   = useState([]);
   const [calGcalItems, setCalGcalItems] = useState([]);
@@ -652,13 +655,10 @@ export default function App() {
     return () => unsub();
   }, []);
 
-  // ★ 改：loadCalendarEvents 接受 year, month，預設為當月
-  const loadCalendarEvents = useCallback(async (year, month) => {
+  const loadCalendarEvents = useCallback(async () => {
     const token = await getValidGcalToken();
     if (!token) return;
-    const y = year  ?? new Date().getFullYear();
-    const m = month ?? new Date().getMonth();
-    const events = await fetchAllCalendarEvents(token, y, m);
+    const events = await fetchAllCalendarEvents(token);
     if (events === null) {
       setGcalEvents([]);
       return;
@@ -669,7 +669,7 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
     loadCalendarEvents();
-    const interval = setInterval(() => loadCalendarEvents(), 40 * 60 * 1000);
+    const interval = setInterval(loadCalendarEvents, 40 * 60 * 1000);
     return () => clearInterval(interval);
   }, [user, loadCalendarEvents]);
 
@@ -776,7 +776,6 @@ export default function App() {
   const sorted   = sortItems(current);
   const filtered = sorted.filter(item => {
     const done = item.type==="project" ? (item.subtasks||[]).length>0&&(item.subtasks||[]).every(s=>s.done) : item.done;
-    if (filter==="all")  return true;
     if (filter==="done") return done;
     return !done;
   });
@@ -819,8 +818,8 @@ export default function App() {
           </div>
         </div>
 
-        {/* 今日彙報 */}
-        <TodaySummary todos={todos} gcalEvents={gcalEvents} />
+        {/* 今日彙報 - 只在列表模式顯示 */}
+        {view==="list" && <TodaySummary todos={todos} gcalEvents={gcalEvents} onToggle={handleCalToggle} />}
 
         {/* Tabs */}
         <div style={{ display:"flex", background:"white", borderRadius:18, padding:5, marginBottom:14, border:"1.5px solid #ede9e4", boxShadow:"0 2px 10px rgba(0,0,0,0.05)" }}>
@@ -840,12 +839,8 @@ export default function App() {
         {/* Calendar view */}
         {view==="calendar" && (
           <>
-            <Calendar
-              todos={todos}
-              activeKey={periodKey}
-              gcalEvents={gcalEvents}
+            <Calendar todos={todos} activeKey={periodKey} gcalEvents={gcalEvents}
               onSelectDay={(ds, items, gcal) => { setCalSelected(ds); setCalItems(items); setCalGcalItems(gcal); }}
-              onMonthChange={(y, m) => loadCalendarEvents(y, m)}
             />
             {calSelected && (
               <DayDetail date={calSelected} items={calItems} gcalItems={calGcalItems}
@@ -907,7 +902,7 @@ export default function App() {
         {view==="list" && (
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
             <div style={{ display:"flex", gap:4 }}>
-              {[["all","全部"],["todo","待完成"],["done","已完成"]].map(([val,label])=>(
+              {[["todo","待完成"],["done","已完成"]].map(([val,label])=>(
                 <button key={val} onClick={()=>setFilter(val)} style={{ padding:"4px 10px", borderRadius:20, border:"none", background:filter===val?theme.light:"transparent", color:filter===val?theme.text:"#b8afa8", fontSize:12, fontWeight:filter===val?700:400, cursor:"pointer", fontFamily:"'Noto Sans TC',sans-serif" }}>{label}</button>
               ))}
             </div>
