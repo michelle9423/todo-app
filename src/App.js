@@ -76,10 +76,20 @@ async function getValidGcalToken() {
   return localStorage.getItem("gcal_token") || null;
 }
 
-async function fetchAllCalendarEvents(accessToken) {
-  const today = new Date();
-  const timeMin = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 0, 0, 0).toISOString();
-  const timeMax = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59).toISOString();
+// 從整月 gcalEvents 篩出今天的事件（給 TodaySummary 用）
+function getTodayGcalEvents(gcalEvents) {
+  const today = TODAY();
+  return gcalEvents.filter(e => {
+    const ds = e.isAllDay ? e.start.slice(0, 10) : toDateStr(new Date(e.start));
+    return ds === today;
+  });
+}
+
+async function fetchAllCalendarEvents(accessToken, year, month) {
+  const y = year  ?? new Date().getFullYear();
+  const m = month ?? new Date().getMonth();
+  const timeMin = new Date(y, m, 1, 0, 0, 0).toISOString();
+  const timeMax = new Date(y, m + 1, 0, 23, 59, 59).toISOString();
   try {
     const listRes = await fetch("https://www.googleapis.com/calendar/v3/users/me/calendarList",
       { headers: { Authorization: `Bearer ${accessToken}` } });
@@ -263,7 +273,7 @@ function TodaySummary({ todos, gcalEvents, onToggle }) {
   );
 }
 
-function Calendar({ todos, activeKey, gcalEvents, onSelectDay }) {
+function Calendar({ todos, activeKey, gcalEvents, onSelectDay, onMonthChange }) {
   const [curYear, setCurYear]   = useState(new Date().getFullYear());
   const [curMonth, setCurMonth] = useState(new Date().getMonth());
   const [selected, setSelected] = useState(null);
@@ -291,13 +301,23 @@ function Calendar({ todos, activeKey, gcalEvents, onSelectDay }) {
 
   const gcalMap = {};
   gcalEvents.forEach(e => {
-    const ds = toDateStr(new Date(e.start));
+    const ds = e.isAllDay ? e.start.slice(0, 10) : toDateStr(new Date(e.start));
     if (!gcalMap[ds]) gcalMap[ds] = [];
     gcalMap[ds].push(e);
   });
 
-  const prevMonth = () => curMonth === 0 ? (setCurYear(y=>y-1), setCurMonth(11)) : setCurMonth(m=>m-1);
-  const nextMonth = () => curMonth === 11 ? (setCurYear(y=>y+1), setCurMonth(0)) : setCurMonth(m=>m+1);
+  const prevMonth = () => {
+    const newYear  = curMonth === 0 ? curYear - 1 : curYear;
+    const newMonth = curMonth === 0 ? 11 : curMonth - 1;
+    setCurYear(newYear); setCurMonth(newMonth);
+    onMonthChange && onMonthChange(newYear, newMonth);
+  };
+  const nextMonth = () => {
+    const newYear  = curMonth === 11 ? curYear + 1 : curYear;
+    const newMonth = curMonth === 11 ? 0 : curMonth + 1;
+    setCurYear(newYear); setCurMonth(newMonth);
+    onMonthChange && onMonthChange(newYear, newMonth);
+  };
   const cells = [];
   for (let i = 0; i < firstDay; i++) cells.push(null);
   for (let d = 1; d <= daysInMonth; d++) cells.push(d);
@@ -655,10 +675,12 @@ export default function App() {
     return () => unsub();
   }, []);
 
-  const loadCalendarEvents = useCallback(async () => {
+  const loadCalendarEvents = useCallback(async (year, month) => {
     const token = await getValidGcalToken();
     if (!token) return;
-    const events = await fetchAllCalendarEvents(token);
+    const y = year  ?? new Date().getFullYear();
+    const m = month ?? new Date().getMonth();
+    const events = await fetchAllCalendarEvents(token, y, m);
     if (events === null) {
       setGcalEvents([]);
       return;
@@ -669,7 +691,7 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
     loadCalendarEvents();
-    const interval = setInterval(loadCalendarEvents, 40 * 60 * 1000);
+    const interval = setInterval(() => loadCalendarEvents(), 40 * 60 * 1000);
     return () => clearInterval(interval);
   }, [user, loadCalendarEvents]);
 
@@ -819,7 +841,7 @@ export default function App() {
         </div>
 
         {/* 今日彙報 - 只在列表模式顯示 */}
-        {view==="list" && <TodaySummary todos={todos} gcalEvents={gcalEvents} onToggle={handleCalToggle} />}
+        {view==="list" && <TodaySummary todos={todos} gcalEvents={getTodayGcalEvents(gcalEvents)} onToggle={handleCalToggle} />}
 
         {/* Tabs */}
         <div style={{ display:"flex", background:"white", borderRadius:18, padding:5, marginBottom:14, border:"1.5px solid #ede9e4", boxShadow:"0 2px 10px rgba(0,0,0,0.05)" }}>
@@ -841,6 +863,7 @@ export default function App() {
           <>
             <Calendar todos={todos} activeKey={periodKey} gcalEvents={gcalEvents}
               onSelectDay={(ds, items, gcal) => { setCalSelected(ds); setCalItems(items); setCalGcalItems(gcal); }}
+              onMonthChange={(y, m) => loadCalendarEvents(y, m)}
             />
             {calSelected && (
               <DayDetail date={calSelected} items={calItems} gcalItems={calGcalItems}
