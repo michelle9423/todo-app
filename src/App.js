@@ -587,7 +587,9 @@ function ProjectItem({ item, theme, onUpdate, onDelete }) {
         <div style={{ padding:"10px 14px 12px" }}>
           {subtasks.length === 0
             ? <div style={{ fontSize:12, color:"#cdc8c2", paddingLeft:8, paddingBottom:8 }}>還沒有子任務，在下方新增</div>
-            : subtasks.map((sub, idx) => (
+            : [...subtasks.map((sub, idx) => ({ sub, idx }))]
+                .sort((a, b) => (a.sub.done ? 1 : 0) - (b.sub.done ? 1 : 0))
+                .map(({ sub, idx }) => (
                 <SubtaskRow key={sub.id} sub={sub} index={idx} total={subtasks.length} theme={theme}
                   onToggle={()=>updateSub(sub.id,{done:!sub.done})}
                   onDelete={()=>deleteSub(sub.id)}
