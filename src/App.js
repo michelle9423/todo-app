@@ -680,7 +680,7 @@ function SingleItem({ item, theme, onUpdate, onDelete }) {
   );
 }
 
-function WeekView({ todos, gcalEvents, onWeekChange }) {
+function WeekView({ todos, gcalEvents, onWeekChange, onSelectDay }) {
   const getMonday = (date) => {
     const d = new Date(date);
     const day = d.getDay();
@@ -719,18 +719,18 @@ function WeekView({ todos, gcalEvents, onWeekChange }) {
         const projDone = (item.subtasks || []).length > 0 && (item.subtasks || []).every(s => s.done);
         if (item.deadline && !projDone) {
           if (!todosMap[item.deadline]) todosMap[item.deadline] = [];
-          todosMap[item.deadline].push({ ...item, _cat: k });
+          todosMap[item.deadline].push({ ...item, _cat: k, _category: k });
         }
         (item.subtasks || []).forEach(s => {
           if (s.deadline && !s.done) {
             if (!todosMap[s.deadline]) todosMap[s.deadline] = [];
-            todosMap[s.deadline].push({ ...s, _cat: k, _parentTitle: item.title });
+            todosMap[s.deadline].push({ ...s, _cat: k, _category: k, _parentTitle: item.title, _parentId: item.id });
           }
         });
       } else {
         if (item.deadline && !item.done) {
           if (!todosMap[item.deadline]) todosMap[item.deadline] = [];
-          todosMap[item.deadline].push({ ...item, _cat: k });
+          todosMap[item.deadline].push({ ...item, _cat: k, _category: k });
         }
       }
     });
@@ -747,42 +747,60 @@ function WeekView({ todos, gcalEvents, onWeekChange }) {
     const tasks = todosMap[ds] || [];
     const isToday = ds === today;
     const isEmpty = events.length === 0 && tasks.length === 0;
+    const hasContent = !isEmpty;
+    const handleClick = () => {
+      if (!hasContent || !onSelectDay) return;
+      onSelectDay(ds, tasks, events);
+    };
     return (
-      <div key={ds} style={{
+      <div key={ds} onClick={handleClick} style={{
         background: isToday ? "#eef2ff" : "white",
         border: `1.5px solid ${isToday ? "#c7d2fe" : "#ede9e4"}`,
         borderRadius: 12,
         padding: "10px 10px 8px",
-      }}>
+        cursor: hasContent ? "pointer" : "default",
+      }}
+        onMouseEnter={e => { if (hasContent) e.currentTarget.style.boxShadow = "0 2px 12px rgba(0,0,0,0.10)"; }}
+        onMouseLeave={e => { e.currentTarget.style.boxShadow = "none"; }}
+      >
         <div style={{ marginBottom: 7, borderBottom: `1px solid ${isToday ? "#c7d2fe" : "#f0ece8"}`, paddingBottom: 5 }}>
           <span style={{ fontSize: 10, fontWeight: 600, color: isToday ? "#6366f1" : "#b8afa8", marginRight: 3 }}>週{DAY_NAMES[dayIndex]}</span>
           <span style={{ fontSize: 14, fontWeight: 700, color: isToday ? "#6366f1" : "#3a3530" }}>{date.getMonth()+1}/{date.getDate()}</span>
         </div>
-        {events.map(e => (
-          <div key={e.id} style={{ display:"flex", alignItems:"flex-start", gap:5, marginBottom:6 }}>
-            <div style={{ width:6, height:6, borderRadius:"50%", background:e.calendarColor, flexShrink:0, marginTop:3 }}/>
-            <div style={{ flex:1, minWidth:0 }}>
-              <div style={{ fontSize:10, color:"#9ca3af", lineHeight:1.4 }}>{e.isAllDay ? "全天" : new Date(e.start).toLocaleTimeString("zh-TW", { hour:"2-digit", minute:"2-digit" })}</div>
-              <div style={{ fontSize:12, color:"#3a3530", lineHeight:1.3, wordBreak:"break-word" }}>{e.title}</div>
-              <div style={{ fontSize:10, color:"#b8afa8" }}>{e.calendarName}</div>
-            </div>
-          </div>
-        ))}
-        {events.length > 0 && tasks.length > 0 && <div style={{ height:1, background:"#f0ece8", margin:"2px 0 6px" }}/>}
-        {tasks.map((t, i) => {
-          const cat = MORANDI[t._cat] || MORANDI.work;
-          const catLabel = PERIODS[PERIOD_KEYS.indexOf(t._cat)];
-          return (
-            <div key={i} style={{ display:"flex", alignItems:"flex-start", gap:5, marginBottom:6 }}>
-              <div style={{ width:6, height:6, borderRadius:2, background:cat.main, flexShrink:0, marginTop:3 }}/>
-              <div style={{ flex:1, minWidth:0 }}>
-                {t._parentTitle && <div style={{ fontSize:9, color:"#b8afa8", lineHeight:1.4 }}>{t._parentTitle} ›</div>}
-                <div style={{ fontSize:12, color:"#3a3530", lineHeight:1.3, wordBreak:"break-word" }}>{t.title || t.text}</div>
-                <span style={{ fontSize:9, padding:"1px 5px", borderRadius:10, background:cat.light, color:cat.text, fontWeight:700 }}>{catLabel}</span>
+        {events.length > 0 && (
+          <>
+            <div style={{ fontSize:9, fontWeight:700, color:"#9ca3af", letterSpacing:"0.5px", marginBottom:5 }}>📅 行程</div>
+            {events.map(e => (
+              <div key={e.id} style={{ display:"flex", alignItems:"flex-start", gap:5, marginBottom:6 }}>
+                <div style={{ width:6, height:6, borderRadius:"50%", background:e.calendarColor, flexShrink:0, marginTop:3 }}/>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:10, color:"#9ca3af", lineHeight:1.4 }}>{e.isAllDay ? "全天" : new Date(e.start).toLocaleTimeString("zh-TW", { hour:"2-digit", minute:"2-digit" })}</div>
+                  <div style={{ fontSize:12, color:"#3a3530", lineHeight:1.3, wordBreak:"break-word" }}>{e.title}</div>
+                  <div style={{ fontSize:10, color:"#b8afa8" }}>{e.calendarName}</div>
+                </div>
               </div>
-            </div>
-          );
-        })}
+            ))}
+          </>
+        )}
+        {tasks.length > 0 && (
+          <>
+            <div style={{ fontSize:9, fontWeight:700, color:"#9ca3af", letterSpacing:"0.5px", marginBottom:5, marginTop: events.length > 0 ? 6 : 0 }}>✅ 截止任務</div>
+            {tasks.map((t, i) => {
+              const cat = MORANDI[t._cat] || MORANDI.work;
+              const catLabel = PERIODS[PERIOD_KEYS.indexOf(t._cat)];
+              return (
+                <div key={i} style={{ display:"flex", alignItems:"flex-start", gap:5, marginBottom:6 }}>
+                  <div style={{ width:6, height:6, borderRadius:2, background:cat.main, flexShrink:0, marginTop:3 }}/>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    {t._parentTitle && <div style={{ fontSize:9, color:"#b8afa8", lineHeight:1.4 }}>{t._parentTitle} ›</div>}
+                    <div style={{ fontSize:12, color:"#3a3530", lineHeight:1.3, wordBreak:"break-word" }}>{t.title || t.text}</div>
+                    <span style={{ fontSize:9, padding:"1px 5px", borderRadius:10, background:cat.light, color:cat.text, fontWeight:700 }}>{catLabel}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </>
+        )}
         {isEmpty && <div style={{ fontSize:11, color:"#e0dbd5", textAlign:"center", padding:"4px 0" }}>—</div>}
       </div>
     );
@@ -821,6 +839,9 @@ export default function App() {
   const [deadline, setDeadline]   = useState("");
   const [filter, setFilter]       = useState("todo");
   const [gcalEvents, setGcalEvents] = useState([]);
+  const [calSelected, setCalSelected] = useState(null);
+  const [calItems, setCalItems]       = useState([]);
+  const [calGcalItems, setCalGcalItems] = useState([]);
 
   const periodKey = PERIOD_KEYS[activeTab];
   const theme     = MORANDI[periodKey];
@@ -1016,7 +1037,20 @@ export default function App() {
 
         {/* Calendar view */}
         {view==="calendar" && (
-          <WeekView todos={todos} gcalEvents={gcalEvents} onWeekChange={(y, m) => loadCalendarEvents(y, m)} />
+          <>
+            <Calendar todos={todos} activeKey={periodKey} gcalEvents={gcalEvents}
+              onSelectDay={(ds, items, gcal) => { setCalSelected(ds); setCalItems(items); setCalGcalItems(gcal); }}
+              onMonthChange={(y, m) => loadCalendarEvents(y, m)}
+            />
+            <WeekView todos={todos} gcalEvents={gcalEvents}
+              onWeekChange={(y, m) => loadCalendarEvents(y, m)}
+              onSelectDay={(ds, items, gcal) => { setCalSelected(ds); setCalItems(items); setCalGcalItems(gcal); }}
+            />
+            {calSelected && (
+              <DayDetail date={calSelected} items={calItems} gcalItems={calGcalItems}
+                onToggle={handleCalToggle} onClose={() => setCalSelected(null)}/>
+            )}
+          </>
         )}
 
         {/* Progress */}
