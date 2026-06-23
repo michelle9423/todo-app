@@ -1042,14 +1042,14 @@ export default function App() {
               onSelectDay={(ds, items, gcal) => { setCalSelected(ds); setCalItems(items); setCalGcalItems(gcal); }}
               onMonthChange={(y, m) => loadCalendarEvents(y, m)}
             />
-            <WeekView todos={todos} gcalEvents={gcalEvents}
-              onWeekChange={(y, m) => loadCalendarEvents(y, m)}
-              onSelectDay={(ds, items, gcal) => { setCalSelected(ds); setCalItems(items); setCalGcalItems(gcal); }}
-            />
             {calSelected && (
               <DayDetail date={calSelected} items={calItems} gcalItems={calGcalItems}
                 onToggle={handleCalToggle} onClose={() => setCalSelected(null)}/>
             )}
+            <WeekView todos={todos} gcalEvents={gcalEvents}
+              onWeekChange={(y, m) => loadCalendarEvents(y, m)}
+              onSelectDay={(ds, items, gcal) => { setCalSelected(ds); setCalItems(items); setCalGcalItems(gcal); }}
+            />
           </>
         )}
 
