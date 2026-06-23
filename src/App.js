@@ -528,7 +528,8 @@ function SubtaskRow({ sub, index, total, theme, onToggle, onDelete, onEditText, 
 }
 
 function ProjectItem({ item, theme, onUpdate, onDelete }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(true);
+  const [showDoneSubs, setShowDoneSubs] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleTxt, setTitleTxt] = useState(item.title);
   const [newSub, setNewSub] = useState("");
@@ -587,18 +588,45 @@ function ProjectItem({ item, theme, onUpdate, onDelete }) {
         <div style={{ padding:"10px 14px 12px" }}>
           {subtasks.length === 0
             ? <div style={{ fontSize:12, color:"#cdc8c2", paddingLeft:8, paddingBottom:8 }}>還沒有子任務，在下方新增</div>
-            : [...subtasks.map((sub, idx) => ({ sub, idx }))]
-                .sort((a, b) => (a.sub.done ? 1 : 0) - (b.sub.done ? 1 : 0))
-                .map(({ sub, idx }) => (
-                <SubtaskRow key={sub.id} sub={sub} index={idx} total={subtasks.length} theme={theme}
-                  onToggle={()=>updateSub(sub.id,{done:!sub.done})}
-                  onDelete={()=>deleteSub(sub.id)}
-                  onEditText={txt=>updateSub(sub.id,{text:txt})}
-                  onDeadlineChange={dl=>updateSub(sub.id,{deadline:dl})}
-                  onMoveUp={()=>moveSubUp(idx)}
-                  onMoveDown={()=>moveSubDown(idx)}
-                />
-              ))
+            : (() => {
+                const pendingSubs = subtasks.map((sub, idx) => ({ sub, idx })).filter(({ sub }) => !sub.done);
+                const doneSubs    = subtasks.map((sub, idx) => ({ sub, idx })).filter(({ sub }) => sub.done);
+                return (
+                  <>
+                    {pendingSubs.length === 0 && doneSubs.length === 0 && (
+                      <div style={{ fontSize:12, color:"#cdc8c2", paddingLeft:8, paddingBottom:8 }}>還沒有子任務</div>
+                    )}
+                    {pendingSubs.map(({ sub, idx }) => (
+                      <SubtaskRow key={sub.id} sub={sub} index={idx} total={subtasks.length} theme={theme}
+                        onToggle={()=>updateSub(sub.id,{done:!sub.done})}
+                        onDelete={()=>deleteSub(sub.id)}
+                        onEditText={txt=>updateSub(sub.id,{text:txt})}
+                        onDeadlineChange={dl=>updateSub(sub.id,{deadline:dl})}
+                        onMoveUp={()=>moveSubUp(idx)}
+                        onMoveDown={()=>moveSubDown(idx)}
+                      />
+                    ))}
+                    {doneSubs.length > 0 && (
+                      <>
+                        <button onClick={() => setShowDoneSubs(s => !s)} style={{ display:"flex", alignItems:"center", gap:4, background:"none", border:"none", cursor:"pointer", color:"#b8afa8", fontSize:12, padding:"4px 8px", marginLeft:8, marginTop:2 }}>
+                          <span style={{ fontSize:10 }}>{showDoneSubs ? "▲" : "▼"}</span>
+                          <span>已完成 {doneSubs.length} 項</span>
+                        </button>
+                        {showDoneSubs && doneSubs.map(({ sub, idx }) => (
+                          <SubtaskRow key={sub.id} sub={sub} index={idx} total={subtasks.length} theme={theme}
+                            onToggle={()=>updateSub(sub.id,{done:!sub.done})}
+                            onDelete={()=>deleteSub(sub.id)}
+                            onEditText={txt=>updateSub(sub.id,{text:txt})}
+                            onDeadlineChange={dl=>updateSub(sub.id,{deadline:dl})}
+                            onMoveUp={()=>moveSubUp(idx)}
+                            onMoveDown={()=>moveSubDown(idx)}
+                          />
+                        ))}
+                      </>
+                    )}
+                  </>
+                );
+              })()
           }
           <div style={{ display:"flex", flexDirection:"column", gap:6, marginTop:6, paddingLeft:8 }}>
             <div style={{ display:"flex", gap:6 }}>
@@ -652,6 +680,135 @@ function SingleItem({ item, theme, onUpdate, onDelete }) {
   );
 }
 
+function WeekView({ todos, gcalEvents, onWeekChange }) {
+  const getMonday = (date) => {
+    const d = new Date(date);
+    const day = d.getDay();
+    const diff = day === 0 ? -6 : 1 - day;
+    d.setDate(d.getDate() + diff);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  };
+
+  const [weekStart, setWeekStart] = useState(() => getMonday(new Date()));
+
+  const days = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(weekStart);
+    d.setDate(weekStart.getDate() + i);
+    return d;
+  });
+
+  const navigate = (dir) => {
+    const newStart = new Date(weekStart);
+    newStart.setDate(weekStart.getDate() + dir * 7);
+    setWeekStart(newStart);
+    onWeekChange && onWeekChange(newStart.getFullYear(), newStart.getMonth());
+  };
+
+  const gcalMap = {};
+  gcalEvents.forEach(e => {
+    const ds = e.isAllDay ? e.start.slice(0, 10) : toDateStr(new Date(e.start));
+    if (!gcalMap[ds]) gcalMap[ds] = [];
+    gcalMap[ds].push(e);
+  });
+
+  const todosMap = {};
+  PERIOD_KEYS.forEach(k => {
+    (todos[k] || []).forEach(item => {
+      if (item.type === "project") {
+        const projDone = (item.subtasks || []).length > 0 && (item.subtasks || []).every(s => s.done);
+        if (item.deadline && !projDone) {
+          if (!todosMap[item.deadline]) todosMap[item.deadline] = [];
+          todosMap[item.deadline].push({ ...item, _cat: k });
+        }
+        (item.subtasks || []).forEach(s => {
+          if (s.deadline && !s.done) {
+            if (!todosMap[s.deadline]) todosMap[s.deadline] = [];
+            todosMap[s.deadline].push({ ...s, _cat: k, _parentTitle: item.title });
+          }
+        });
+      } else {
+        if (item.deadline && !item.done) {
+          if (!todosMap[item.deadline]) todosMap[item.deadline] = [];
+          todosMap[item.deadline].push({ ...item, _cat: k });
+        }
+      }
+    });
+  });
+
+  const today = TODAY();
+  const DAY_NAMES = ["一", "二", "三", "四", "五", "六", "日"];
+  const endDay = days[6];
+  const weekLabel = `${weekStart.getFullYear()} 年 ${weekStart.getMonth()+1}/${weekStart.getDate()} – ${endDay.getMonth()+1}/${endDay.getDate()}`;
+
+  const renderDayCell = (date, dayIndex) => {
+    const ds = toDateStr(date);
+    const events = gcalMap[ds] || [];
+    const tasks = todosMap[ds] || [];
+    const isToday = ds === today;
+    const isEmpty = events.length === 0 && tasks.length === 0;
+    return (
+      <div key={ds} style={{
+        background: isToday ? "#eef2ff" : "white",
+        border: `1.5px solid ${isToday ? "#c7d2fe" : "#ede9e4"}`,
+        borderRadius: 12,
+        padding: "10px 10px 8px",
+      }}>
+        <div style={{ marginBottom: 7, borderBottom: `1px solid ${isToday ? "#c7d2fe" : "#f0ece8"}`, paddingBottom: 5 }}>
+          <span style={{ fontSize: 10, fontWeight: 600, color: isToday ? "#6366f1" : "#b8afa8", marginRight: 3 }}>週{DAY_NAMES[dayIndex]}</span>
+          <span style={{ fontSize: 14, fontWeight: 700, color: isToday ? "#6366f1" : "#3a3530" }}>{date.getMonth()+1}/{date.getDate()}</span>
+        </div>
+        {events.map(e => (
+          <div key={e.id} style={{ display:"flex", alignItems:"flex-start", gap:5, marginBottom:6 }}>
+            <div style={{ width:6, height:6, borderRadius:"50%", background:e.calendarColor, flexShrink:0, marginTop:3 }}/>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontSize:10, color:"#9ca3af", lineHeight:1.4 }}>{e.isAllDay ? "全天" : new Date(e.start).toLocaleTimeString("zh-TW", { hour:"2-digit", minute:"2-digit" })}</div>
+              <div style={{ fontSize:12, color:"#3a3530", lineHeight:1.3, wordBreak:"break-word" }}>{e.title}</div>
+              <div style={{ fontSize:10, color:"#b8afa8" }}>{e.calendarName}</div>
+            </div>
+          </div>
+        ))}
+        {events.length > 0 && tasks.length > 0 && <div style={{ height:1, background:"#f0ece8", margin:"2px 0 6px" }}/>}
+        {tasks.map((t, i) => {
+          const cat = MORANDI[t._cat] || MORANDI.work;
+          const catLabel = PERIODS[PERIOD_KEYS.indexOf(t._cat)];
+          return (
+            <div key={i} style={{ display:"flex", alignItems:"flex-start", gap:5, marginBottom:6 }}>
+              <div style={{ width:6, height:6, borderRadius:2, background:cat.main, flexShrink:0, marginTop:3 }}/>
+              <div style={{ flex:1, minWidth:0 }}>
+                {t._parentTitle && <div style={{ fontSize:9, color:"#b8afa8", lineHeight:1.4 }}>{t._parentTitle} ›</div>}
+                <div style={{ fontSize:12, color:"#3a3530", lineHeight:1.3, wordBreak:"break-word" }}>{t.title || t.text}</div>
+                <span style={{ fontSize:9, padding:"1px 5px", borderRadius:10, background:cat.light, color:cat.text, fontWeight:700 }}>{catLabel}</span>
+              </div>
+            </div>
+          );
+        })}
+        {isEmpty && <div style={{ fontSize:11, color:"#e0dbd5", textAlign:"center", padding:"4px 0" }}>—</div>}
+      </div>
+    );
+  };
+
+  const sundayDs = toDateStr(days[6]);
+  const sundayHasContent = (gcalMap[sundayDs] || []).length > 0 || (todosMap[sundayDs] || []).length > 0;
+
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12, padding:"12px 16px", background:"white", borderRadius:14, border:"1.5px solid #ede9e4", boxShadow:"0 2px 8px rgba(0,0,0,0.04)" }}>
+        <button onClick={() => navigate(-1)} style={{ background:"none", border:"none", cursor:"pointer", fontSize:20, color:"#9b8ea8", padding:"0 6px" }}>‹</button>
+        <span style={{ fontWeight:700, fontSize:14, color:"#3a3530" }}>{weekLabel}</span>
+        <button onClick={() => navigate(1)} style={{ background:"none", border:"none", cursor:"pointer", fontSize:20, color:"#9b8ea8", padding:"0 6px" }}>›</button>
+      </div>
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:8 }}>
+        {days.slice(0, 3).map((d, i) => renderDayCell(d, i))}
+      </div>
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom: sundayHasContent ? 8 : 0 }}>
+        {days.slice(3, 6).map((d, i) => renderDayCell(d, i + 3))}
+      </div>
+      {sundayHasContent && renderDayCell(days[6], 6)}
+    </div>
+  );
+}
+
 export default function App() {
   const [user, setUser]           = useState(undefined);
   const [activeTab, setActiveTab] = useState(0);
@@ -663,9 +820,6 @@ export default function App() {
   const [priority, setPriority]   = useState("high");
   const [deadline, setDeadline]   = useState("");
   const [filter, setFilter]       = useState("todo");
-  const [calSelected, setCalSelected] = useState(null);
-  const [calItems, setCalItems]   = useState([]);
-  const [calGcalItems, setCalGcalItems] = useState([]);
   const [gcalEvents, setGcalEvents] = useState([]);
 
   const periodKey = PERIOD_KEYS[activeTab];
@@ -862,20 +1016,11 @@ export default function App() {
 
         {/* Calendar view */}
         {view==="calendar" && (
-          <>
-            <Calendar todos={todos} activeKey={periodKey} gcalEvents={gcalEvents}
-              onSelectDay={(ds, items, gcal) => { setCalSelected(ds); setCalItems(items); setCalGcalItems(gcal); }}
-              onMonthChange={(y, m) => loadCalendarEvents(y, m)}
-            />
-            {calSelected && (
-              <DayDetail date={calSelected} items={calItems} gcalItems={calGcalItems}
-                onToggle={handleCalToggle} onClose={()=>setCalSelected(null)}/>
-            )}
-          </>
+          <WeekView todos={todos} gcalEvents={gcalEvents} onWeekChange={(y, m) => loadCalendarEvents(y, m)} />
         )}
 
         {/* Progress */}
-        {totalCount>0 && (
+        {view !== "calendar" && totalCount>0 && (
           <div style={{ background:"white", borderRadius:14, padding:"10px 14px", marginBottom:12, border:"1.5px solid #ede9e4", boxShadow:"0 2px 8px rgba(0,0,0,0.04)" }}>
             <div style={{ display:"flex", justifyContent:"space-between", marginBottom:5, alignItems:"center" }}>
               <div style={{ display:"flex", alignItems:"center", gap:8 }}>
@@ -891,7 +1036,7 @@ export default function App() {
         )}
 
         {/* Add form */}
-        <div style={{ background:"white", borderRadius:16, padding:14, marginBottom:12, border:`1.5px solid ${theme.light}`, boxShadow:"0 2px 12px rgba(0,0,0,0.05)" }}>
+        {view !== "calendar" && <div style={{ background:"white", borderRadius:16, padding:14, marginBottom:12, border:`1.5px solid ${theme.light}`, boxShadow:"0 2px 12px rgba(0,0,0,0.05)" }}>
           <div style={{ display:"flex", gap:6, marginBottom:10 }}>
             {[["single","✏️ 單一任務"],["project","📁 大項目"]].map(([t,l])=>(
               <button key={t} onClick={()=>setAddType(t)} style={{ padding:"5px 12px", borderRadius:20, border:`1.5px solid ${addType===t?theme.main:"#ede9e4"}`, background:addType===t?theme.soft:"transparent", color:addType===t?theme.text:"#b8afa8", fontSize:12, fontWeight:addType===t?700:400, cursor:"pointer", fontFamily:"'Noto Sans TC',sans-serif" }}>{l}</button>
@@ -921,7 +1066,7 @@ export default function App() {
               {deadline && <button onClick={()=>setDeadline("")} style={{ background:"none",border:"none",cursor:"pointer",color:"#b8afa8",fontSize:13,padding:0 }}>✕</button>}
             </div>
           </div>
-        </div>
+        </div>}
 
         {/* Filter */}
         {view==="list" && (
