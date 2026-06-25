@@ -938,7 +938,7 @@ function WeekView({ todos, gcalEvents, onWeekChange, onSelectDay }) {
 export default function App() {
   const [user, setUser]           = useState(undefined);
   const [activeTab, setActiveTab] = useState(0);
-  const [view, setView]           = useState("list");
+  const [view, setView]           = useState("calendar");
   const [todos, setTodos]         = useState({ work:[], study:[], house:[] });
   const [loading, setLoading]     = useState(true);
   const [addType, setAddType]     = useState("single");
@@ -1146,36 +1146,39 @@ export default function App() {
         {/* 今日彙報 - 只在列表模式顯示 */}
         {view==="list" && <TodaySummary todos={todos} gcalEvents={getTodayGcalEvents(gcalEvents)} onToggle={handleCalToggle} />}
 
-        {/* Tabs */}
-        <div style={{ display:"flex", background:"white", borderRadius:18, padding:5, marginBottom:14, border:"1.5px solid #ede9e4", boxShadow:"0 2px 10px rgba(0,0,0,0.05)" }}>
-          {PERIODS.map((p,i) => {
-            const k=PERIOD_KEYS[i];
-            const cnt=todos[k].filter(item=>item.type==="project"?!((item.subtasks||[]).every(s=>s.done)&&(item.subtasks||[]).length>0):!item.done).length;
-            const m=MORANDI[k];
-            return (
-              <button key={k} onClick={()=>setActiveTab(i)} style={{ flex:1, padding:"9px 4px", borderRadius:13, border:"none", cursor:"pointer", background:activeTab===i?m.main:"transparent", color:activeTab===i?"white":m.text, fontWeight:activeTab===i?700:500, fontSize:13, transition:"all 0.2s", display:"flex", alignItems:"center", justifyContent:"center", gap:4, fontFamily:"'Noto Sans TC',sans-serif" }}>
-                <span>{ICONS[k]}</span><span>{p}</span>
-                {cnt>0 && <span style={{ background:activeTab===i?"rgba(255,255,255,0.3)":m.light, color:activeTab===i?"white":m.text, borderRadius:20, fontSize:10, fontWeight:700, padding:"1px 6px" }}>{cnt}</span>}
-              </button>
-            );
-          })}
-        </div>
+        {/* Tabs - 只在列表模式顯示 */}
+        {view !== "calendar" && (
+          <div style={{ display:"flex", background:"white", borderRadius:18, padding:5, marginBottom:14, border:"1.5px solid #ede9e4", boxShadow:"0 2px 10px rgba(0,0,0,0.05)" }}>
+            {PERIODS.map((p,i) => {
+              const k=PERIOD_KEYS[i];
+              const cnt=todos[k].filter(item=>item.type==="project"?!((item.subtasks||[]).every(s=>s.done)&&(item.subtasks||[]).length>0):!item.done).length;
+              const m=MORANDI[k];
+              return (
+                <button key={k} onClick={()=>setActiveTab(i)} style={{ flex:1, padding:"9px 4px", borderRadius:13, border:"none", cursor:"pointer", background:activeTab===i?m.main:"transparent", color:activeTab===i?"white":m.text, fontWeight:activeTab===i?700:500, fontSize:13, transition:"all 0.2s", display:"flex", alignItems:"center", justifyContent:"center", gap:4, fontFamily:"'Noto Sans TC',sans-serif" }}>
+                  <span>{ICONS[k]}</span><span>{p}</span>
+                  {cnt>0 && <span style={{ background:activeTab===i?"rgba(255,255,255,0.3)":m.light, color:activeTab===i?"white":m.text, borderRadius:20, fontSize:10, fontWeight:700, padding:"1px 6px" }}>{cnt}</span>}
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {/* Calendar view */}
         {view==="calendar" && (
           <>
-            <Calendar todos={todos} activeKey={periodKey} gcalEvents={gcalEvents}
+            <TodaySummary todos={todos} gcalEvents={getTodayGcalEvents(gcalEvents)} onToggle={handleCalToggle} />
+            <WeekView todos={todos} gcalEvents={gcalEvents}
+              onWeekChange={(y, m) => loadCalendarEvents(y, m)}
               onSelectDay={(ds, items, gcal) => { setCalSelected(ds); setCalItems(items); setCalGcalItems(gcal); }}
-              onMonthChange={(y, m) => loadCalendarEvents(y, m)}
             />
             {calSelected && (
               <DayDetail date={calSelected} items={calItems} gcalItems={calGcalItems}
                 onToggle={handleCalToggle} onClose={() => setCalSelected(null)}
                 onDeadlineChange={handleCalDeadline}/>
             )}
-            <WeekView todos={todos} gcalEvents={gcalEvents}
-              onWeekChange={(y, m) => loadCalendarEvents(y, m)}
+            <Calendar todos={todos} activeKey={periodKey} gcalEvents={gcalEvents}
               onSelectDay={(ds, items, gcal) => { setCalSelected(ds); setCalItems(items); setCalGcalItems(gcal); }}
+              onMonthChange={(y, m) => loadCalendarEvents(y, m)}
             />
           </>
         )}
