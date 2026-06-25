@@ -288,13 +288,23 @@ function Calendar({ todos, activeKey, gcalEvents, onSelectDay, onMonthChange }) 
     if (!dMap[date]) dMap[date] = { work: [], study: [], house: [] };
     dMap[date][cat].push(item);
   };
+  const addRangeToMap = (endDate, startDate, item, cat) => {
+    if (!endDate) return;
+    if (startDate && startDate < endDate) {
+      const cur = new Date(startDate + "T00:00:00");
+      const end = new Date(endDate + "T00:00:00");
+      while (cur <= end) { addToMap(toDateStr(new Date(cur)), item, cat); cur.setDate(cur.getDate() + 1); }
+    } else {
+      addToMap(endDate, item, cat);
+    }
+  };
   PERIOD_KEYS.forEach(k => {
     (todos[k] || []).forEach(item => {
       if (item.type === "project") {
-        if (item.deadline) addToMap(item.deadline, { ...item, _isProject: true, _category: k }, k);
-        (item.subtasks || []).forEach(s => { if (s.deadline) addToMap(s.deadline, { ...s, _parentTitle: item.title, _parentId: item.id, _category: k }, k); });
+        if (item.deadline) addRangeToMap(item.deadline, item.deadlineStart, { ...item, _isProject: true, _category: k }, k);
+        (item.subtasks || []).forEach(s => { if (s.deadline) addRangeToMap(s.deadline, s.deadlineStart, { ...s, _parentTitle: item.title, _parentId: item.id, _category: k }, k); });
       } else {
-        if (item.deadline) addToMap(item.deadline, { ...item, _category: k }, k);
+        if (item.deadline) addRangeToMap(item.deadline, item.deadlineStart, { ...item, _category: k }, k);
       }
     });
   });
@@ -407,14 +417,15 @@ function DayDetail({ date, items, gcalItems, onToggle, onClose, onDeadlineChange
     onToggle(cat, itemId, subId);
   };
 
-  const handleDeadline = (i, t, isSubtask, newDeadline) => {
-    setLocalItems(prev => prev.map((item, idx) => idx === i ? { ...item, deadline: newDeadline } : item));
+  const handleDeadline = (i, t, isSubtask, newDeadline, newDeadlineStart) => {
+    setLocalItems(prev => prev.map((item, idx) => idx === i ? { ...item, deadline: newDeadline, deadlineStart: newDeadlineStart||null } : item));
     setEditingDlIdx(null);
     onDeadlineChange && onDeadlineChange(
       t._category,
       isSubtask ? t._parentId : t.id,
       isSubtask ? t.id : null,
-      newDeadline
+      newDeadline,
+      newDeadlineStart || null
     );
   };
 
@@ -485,16 +496,11 @@ function DayDetail({ date, items, gcalItems, onToggle, onClose, onDeadlineChange
                   )}
                 </div>
                 {isEditingDl && (
-                  <div style={{ marginTop:8, paddingLeft: t.type !== "project" || isSubtask ? 26 : 22, display:"flex", alignItems:"center", gap:6 }}>
-                    <input type="date" defaultValue={t.deadline || ""}
-                      onChange={e => handleDeadline(i, t, isSubtask, e.target.value || null)}
-                      style={{ border:`1.5px solid ${cat.main}`, borderRadius:8, padding:"3px 8px", fontSize:12, color:"#3a3530", outline:"none", cursor:"pointer" }}
-                      autoFocus
+                  <div style={{ marginTop:8, paddingLeft: t.type !== "project" || isSubtask ? 26 : 22 }}>
+                    <DateButton
+                      deadline={t.deadline} deadlineStart={t.deadlineStart} done={false}
+                      onChange={(dl, ds) => handleDeadline(i, t, isSubtask, dl, ds)}
                     />
-                    {t.deadline && (
-                      <button onClick={() => handleDeadline(i, t, isSubtask, null)}
-                        style={{ background:"none", border:"none", cursor:"pointer", color:"#b8afa8", fontSize:12, padding:0 }}>清除</button>
-                    )}
                   </div>
                 )}
               </div>
@@ -510,10 +516,32 @@ function DayDetail({ date, items, gcalItems, onToggle, onClose, onDeadlineChange
   );
 }
 
-function DateButton({ deadline, done, onChange }) {
+function fmtShort(ds) {
+  if (!ds) return "";
+  const d = new Date(ds + "T00:00:00");
+  return `${d.getMonth()+1}/${d.getDate()}`;
+}
+
+function DateButton({ deadline, deadlineStart, done, onChange }) {
+  // onChange(endDate, startDate) — either can be null
   const [open, setOpen] = useState(false);
+  const [localStart, setLocalStart] = useState(deadlineStart || "");
+  const [localEnd, setLocalEnd]     = useState(deadline || "");
+  useEffect(() => { setLocalStart(deadlineStart || ""); setLocalEnd(deadline || ""); }, [deadline, deadlineStart]);
+
   const dc = deadlineColor(deadline, done);
-  const label = isOverdue(deadline) ? `⚠ 已逾期 ${deadline}` : isDueToday(deadline) ? `⏰ 今天截止 ${deadline}` : deadline || "設定截止日";
+  let label;
+  if (!deadline) {
+    label = "設定截止日";
+  } else if (deadlineStart) {
+    const prefix = isOverdue(deadline) ? "⚠ 已逾期 " : isDueToday(deadline) ? "⏰ 今天截止 " : "";
+    label = `${prefix}${fmtShort(deadlineStart)} – ${fmtShort(deadline)}`;
+  } else {
+    label = isOverdue(deadline) ? `⚠ 已逾期 ${deadline}` : isDueToday(deadline) ? `⏰ 今天截止 ${deadline}` : deadline;
+  }
+
+  const confirm = () => { if (localEnd) { onChange(localEnd || null, localStart || null); setOpen(false); } };
+
   return (
     <div>
       <div style={{ display:"flex", alignItems:"center", gap:6 }}>
@@ -525,16 +553,31 @@ function DateButton({ deadline, done, onChange }) {
           {label}
         </button>
         {deadline && !done && (
-          <button onClick={() => onChange(null)} style={{ background:"none", border:"none", cursor:"pointer", color:"#cdc8c2", fontSize:12, padding:0 }}
+          <button onClick={() => { onChange(null, null); setLocalStart(""); setLocalEnd(""); }} style={{ background:"none", border:"none", cursor:"pointer", color:"#cdc8c2", fontSize:12, padding:0 }}
             onMouseEnter={e=>e.currentTarget.style.color="#b07070"} onMouseLeave={e=>e.currentTarget.style.color="#cdc8c2"}>✕</button>
         )}
       </div>
       {open && (
-        <div style={{ marginTop:6 }}>
-          <input type="date" defaultValue={deadline||""} min={TODAY()}
-            onChange={e => { onChange(e.target.value||null); setOpen(false); }}
-            style={{ border:"1.5px solid #9b8ea8", borderRadius:8, padding:"4px 8px", fontSize:12, color:"#3a3530", outline:"none", cursor:"pointer" }}
-          />
+        <div style={{ marginTop:6, background:"#faf8f5", border:"1.5px solid #e8e3de", borderRadius:10, padding:"10px 12px", display:"flex", flexDirection:"column", gap:7 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            <span style={{ fontSize:11, color:"#b8afa8", minWidth:28 }}>從</span>
+            <input type="date" value={localStart} max={localEnd||undefined}
+              onChange={e => setLocalStart(e.target.value)}
+              style={{ border:"1.5px solid #d8d3ce", borderRadius:7, padding:"3px 7px", fontSize:12, color:localStart?"#3a3530":"#b8afa8", outline:"none", cursor:"pointer" }}
+            />
+            {localStart && <button onClick={() => setLocalStart("")} style={{ background:"none",border:"none",cursor:"pointer",color:"#b8afa8",fontSize:12,padding:0 }}>✕</button>}
+          </div>
+          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            <span style={{ fontSize:11, color:"#b8afa8", minWidth:28 }}>截止</span>
+            <input type="date" value={localEnd} min={localStart||undefined}
+              onChange={e => setLocalEnd(e.target.value)}
+              style={{ border:"1.5px solid #9b8ea8", borderRadius:7, padding:"3px 7px", fontSize:12, color:localEnd?"#3a3530":"#b8afa8", outline:"none", cursor:"pointer" }}
+            />
+          </div>
+          <div style={{ display:"flex", gap:6, justifyContent:"flex-end" }}>
+            <button onClick={() => setOpen(false)} style={{ background:"none", border:"1px solid #d8d3ce", borderRadius:7, padding:"3px 10px", fontSize:12, color:"#b8afa8", cursor:"pointer" }}>取消</button>
+            <button onClick={confirm} disabled={!localEnd} style={{ background: localEnd?"#9b8ea8":"#e0dbd5", border:"none", borderRadius:7, padding:"3px 10px", fontSize:12, color:"white", cursor:localEnd?"pointer":"not-allowed", fontWeight:600 }}>確定</button>
+          </div>
         </div>
       )}
     </div>
@@ -564,7 +607,7 @@ function SubtaskRow({ sub, index, total, theme, onToggle, onDelete, onEditText, 
           <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
         </button>
       </div>
-      <div style={{ paddingLeft:42 }}><DateButton deadline={sub.deadline} done={sub.done} onChange={onDeadlineChange}/></div>
+      <div style={{ paddingLeft:42 }}><DateButton deadline={sub.deadline} deadlineStart={sub.deadlineStart} done={sub.done} onChange={onDeadlineChange}/></div>
     </div>
   );
 }
@@ -613,7 +656,7 @@ function ProjectItem({ item, theme, onUpdate, onDelete }) {
           </button>
         </div>
         <div style={{ display:"flex", alignItems:"center", gap:12, marginTop:8, paddingLeft:36, flexWrap:"wrap" }}>
-          <DateButton deadline={item.deadline} done={allDone} onChange={dl=>onUpdate({...item,deadline:dl})}/>
+          <DateButton deadline={item.deadline} deadlineStart={item.deadlineStart} done={allDone} onChange={(dl,ds)=>onUpdate({...item,deadline:dl,deadlineStart:ds||null})}/>
           {total > 0 && (
             <div style={{ display:"flex", alignItems:"center", gap:6 }}>
               <div style={{ width:80,height:5, background:"#e8e3de", borderRadius:4, overflow:"hidden" }}>
@@ -643,7 +686,7 @@ function ProjectItem({ item, theme, onUpdate, onDelete }) {
                         onToggle={()=>updateSub(sub.id,{done:!sub.done})}
                         onDelete={()=>deleteSub(sub.id)}
                         onEditText={txt=>updateSub(sub.id,{text:txt})}
-                        onDeadlineChange={dl=>updateSub(sub.id,{deadline:dl})}
+                        onDeadlineChange={(dl,ds)=>updateSub(sub.id,{deadline:dl,deadlineStart:ds||null})}
                         onMoveUp={()=>moveSubUp(idx)}
                         onMoveDown={()=>moveSubDown(idx)}
                       />
@@ -659,7 +702,7 @@ function ProjectItem({ item, theme, onUpdate, onDelete }) {
                             onToggle={()=>updateSub(sub.id,{done:!sub.done})}
                             onDelete={()=>deleteSub(sub.id)}
                             onEditText={txt=>updateSub(sub.id,{text:txt})}
-                            onDeadlineChange={dl=>updateSub(sub.id,{deadline:dl})}
+                            onDeadlineChange={(dl,ds)=>updateSub(sub.id,{deadline:dl,deadlineStart:ds||null})}
                             onMoveUp={()=>moveSubUp(idx)}
                             onMoveDown={()=>moveSubDown(idx)}
                           />
@@ -716,7 +759,7 @@ function SingleItem({ item, theme, onUpdate, onDelete }) {
           <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
         </button>
       </div>
-      <div style={{ paddingLeft:32, marginTop:8 }}><DateButton deadline={item.deadline} done={item.done} onChange={dl=>onUpdate({...item,deadline:dl})}/></div>
+      <div style={{ paddingLeft:32, marginTop:8 }}><DateButton deadline={item.deadline} deadlineStart={item.deadlineStart} done={item.done} onChange={(dl,ds)=>onUpdate({...item,deadline:dl,deadlineStart:ds||null})}/></div>
       {dueToday && !overdue && <div style={{ paddingLeft:32, marginTop:4 }}><span style={{ fontSize:11, color:"#9a8558", background:"#f0ecdf", padding:"1px 7px", borderRadius:20, fontWeight:600 }}>⏰ 今天截止</span></div>}
     </div>
   );
@@ -755,25 +798,35 @@ function WeekView({ todos, gcalEvents, onWeekChange, onSelectDay }) {
   });
 
   const todosMap = {};
+  const addToTodosRange = (endDate, startDate, entry) => {
+    if (!endDate) return;
+    if (startDate && startDate < endDate) {
+      const cur = new Date(startDate + "T00:00:00");
+      const end = new Date(endDate + "T00:00:00");
+      while (cur <= end) {
+        const ds = toDateStr(new Date(cur));
+        if (!todosMap[ds]) todosMap[ds] = [];
+        if (!todosMap[ds].find(x => x.id === entry.id)) todosMap[ds].push(entry);
+        cur.setDate(cur.getDate() + 1);
+      }
+    } else {
+      if (!todosMap[endDate]) todosMap[endDate] = [];
+      todosMap[endDate].push(entry);
+    }
+  };
   PERIOD_KEYS.forEach(k => {
     (todos[k] || []).forEach(item => {
       if (item.type === "project") {
         const projDone = (item.subtasks || []).length > 0 && (item.subtasks || []).every(s => s.done);
-        if (item.deadline && !projDone) {
-          if (!todosMap[item.deadline]) todosMap[item.deadline] = [];
-          todosMap[item.deadline].push({ ...item, _cat: k, _category: k });
-        }
+        if (item.deadline && !projDone)
+          addToTodosRange(item.deadline, item.deadlineStart, { ...item, _cat: k, _category: k });
         (item.subtasks || []).forEach(s => {
-          if (s.deadline && !s.done) {
-            if (!todosMap[s.deadline]) todosMap[s.deadline] = [];
-            todosMap[s.deadline].push({ ...s, _cat: k, _category: k, _parentTitle: item.title, _parentId: item.id });
-          }
+          if (s.deadline && !s.done)
+            addToTodosRange(s.deadline, s.deadlineStart, { ...s, _cat: k, _category: k, _parentTitle: item.title, _parentId: item.id });
         });
       } else {
-        if (item.deadline && !item.done) {
-          if (!todosMap[item.deadline]) todosMap[item.deadline] = [];
-          todosMap[item.deadline].push({ ...item, _cat: k, _category: k });
-        }
+        if (item.deadline && !item.done)
+          addToTodosRange(item.deadline, item.deadlineStart, { ...item, _cat: k, _category: k });
       }
     });
   });
@@ -973,16 +1026,16 @@ export default function App() {
     saveTodos(newTodos);
   };
 
-  const handleCalDeadline = (cat, itemId, subId, newDeadline) => {
+  const handleCalDeadline = (cat, itemId, subId, newDeadline, newDeadlineStart) => {
     const list = todos[cat];
     const updated = list.map(item => {
       if (subId) {
         if (item.id === itemId && item.type === "project") {
-          return { ...item, subtasks: (item.subtasks||[]).map(s => s.id===subId ? {...s, deadline:newDeadline} : s) };
+          return { ...item, subtasks: (item.subtasks||[]).map(s => s.id===subId ? {...s, deadline:newDeadline, deadlineStart:newDeadlineStart||null} : s) };
         }
         return item;
       } else if (item.id === itemId) {
-        return { ...item, deadline: newDeadline };
+        return { ...item, deadline: newDeadline, deadlineStart: newDeadlineStart||null };
       }
       return item;
     });
