@@ -463,9 +463,11 @@ function DayDetail({ date, items, gcalItems, onToggle, onClose, onDeadlineChange
             const isSubtask = !!t._parentTitle;
             const isDone = isSubtask ? t.done : t.type === "project" ? ((t.subtasks||[]).length > 0 && (t.subtasks||[]).every(s=>s.done)) : t.done;
             const isEditingDl = editingDlIdx === i;
+            const isFinalDay = !isDone && t.deadline === date;
             return (
               <div key={i} style={{ marginBottom:6, padding: isSubtask ? "6px 10px 8px 28px" : "8px 10px",
-                background:"white", borderRadius:10, border:"1px solid #ede9e4",
+                background: isFinalDay ? "#fff5f5" : "white",
+                borderRadius:10, border: isFinalDay ? "1.5px solid #f0a0a0" : "1px solid #ede9e4",
                 marginLeft: isSubtask ? 8 : 0,
               }}>
                 <div style={{ display:"flex", alignItems:"center", gap:8 }}>
@@ -481,6 +483,7 @@ function DayDetail({ date, items, gcalItems, onToggle, onClose, onDeadlineChange
                     {t.title || t.text}
                   </span>
                   <span style={{ fontSize:10, padding:"1px 6px", borderRadius:20, background:cat.light, color:cat.text, fontWeight:700 }}>{catLabel}</span>
+                  {isFinalDay && <span style={{ fontSize:10, padding:"1px 6px", borderRadius:20, background:"#fee2e2", color:"#b07070", fontWeight:700, flexShrink:0 }}>今日截止</span>}
                   {!isDone && (
                     <button onClick={() => setEditingDlIdx(isEditingDl ? null : i)}
                       title="更改截止日期"
@@ -879,17 +882,27 @@ function WeekView({ todos, gcalEvents, onWeekChange, onSelectDay }) {
         )}
         {tasks.length > 0 && (
           <>
-            <div style={{ fontSize:9, fontWeight:700, color:"#9ca3af", letterSpacing:"0.5px", marginBottom:5, marginTop: events.length > 0 ? 6 : 0 }}>✅ 截止任務</div>
+            <div style={{ fontSize:9, fontWeight:700, color:"#9ca3af", letterSpacing:"0.5px", marginBottom:5, marginTop: events.length > 0 ? 6 : 0 }}>✅ 任務</div>
             {tasks.map((t, i) => {
               const cat = MORANDI[t._cat] || MORANDI.work;
               const catLabel = PERIODS[PERIOD_KEYS.indexOf(t._cat)];
+              const isFinalDay = t.deadline === ds;
               return (
-                <div key={i} style={{ display:"flex", alignItems:"flex-start", gap:5, marginBottom:6 }}>
-                  <div style={{ width:6, height:6, borderRadius:2, background:cat.main, flexShrink:0, marginTop:3 }}/>
+                <div key={i} style={{ display:"flex", alignItems:"flex-start", gap:5, marginBottom:6,
+                  background: isFinalDay ? "#fff5f5" : "transparent",
+                  borderRadius: isFinalDay ? 6 : 0,
+                  border: isFinalDay ? "1px solid #f0a0a0" : "none",
+                  padding: isFinalDay ? "3px 5px" : 0,
+                  margin: isFinalDay ? "0 -5px 6px" : "0 0 6px",
+                }}>
+                  <div style={{ width:6, height:6, borderRadius:2, background: isFinalDay ? "#e05555" : cat.main, flexShrink:0, marginTop:3 }}/>
                   <div style={{ flex:1, minWidth:0 }}>
                     {t._parentTitle && <div style={{ fontSize:9, color:"#b8afa8", lineHeight:1.4 }}>{t._parentTitle} ›</div>}
-                    <div style={{ fontSize:12, color:"#3a3530", lineHeight:1.3, wordBreak:"break-word" }}>{t.title || t.text}</div>
-                    <span style={{ fontSize:9, padding:"1px 5px", borderRadius:10, background:cat.light, color:cat.text, fontWeight:700 }}>{catLabel}</span>
+                    <div style={{ fontSize:12, color: isFinalDay ? "#b07070" : "#3a3530", fontWeight: isFinalDay ? 600 : 400, lineHeight:1.3, wordBreak:"break-word" }}>{t.title || t.text}</div>
+                    <div style={{ display:"flex", gap:4, alignItems:"center", marginTop:1 }}>
+                      <span style={{ fontSize:9, padding:"1px 5px", borderRadius:10, background:cat.light, color:cat.text, fontWeight:700 }}>{catLabel}</span>
+                      {isFinalDay && <span style={{ fontSize:9, padding:"1px 5px", borderRadius:10, background:"#fee2e2", color:"#b07070", fontWeight:700 }}>今日截止</span>}
+                    </div>
                   </div>
                 </div>
               );
