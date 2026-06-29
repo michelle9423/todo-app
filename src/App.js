@@ -790,7 +790,15 @@ function WeekView({ todos, gcalEvents, onWeekChange, onSelectDay }) {
     const newStart = new Date(weekStart);
     newStart.setDate(weekStart.getDate() + dir * 7);
     setWeekStart(newStart);
-    onWeekChange && onWeekChange(newStart.getFullYear(), newStart.getMonth());
+    if (onWeekChange) {
+      onWeekChange(newStart.getFullYear(), newStart.getMonth(), false);
+      // 若新週跨月，也通知父層抓另一個月
+      const newEnd = new Date(newStart);
+      newEnd.setDate(newStart.getDate() + 6);
+      if (newEnd.getMonth() !== newStart.getMonth() || newEnd.getFullYear() !== newStart.getFullYear()) {
+        onWeekChange(newEnd.getFullYear(), newEnd.getMonth(), true);
+      }
+    }
   };
 
   const gcalMap = {};
@@ -960,22 +968,41 @@ export default function App() {
     return () => unsub();
   }, []);
 
-  const loadCalendarEvents = useCallback(async (year, month) => {
+  const loadCalendarEvents = useCallback(async (year, month, merge = false) => {
     const token = await getValidGcalToken();
     if (!token) return;
     const y = year  ?? new Date().getFullYear();
     const m = month ?? new Date().getMonth();
     const events = await fetchAllCalendarEvents(token, y, m);
     if (events === null) {
-      setGcalEvents([]);
+      if (!merge) setGcalEvents([]);
       return;
     }
-    setGcalEvents(events);
+    if (merge) {
+      setGcalEvents(prev => {
+        const seen = new Set(prev.map(e => e.id));
+        const merged = [...prev, ...events.filter(e => !seen.has(e.id))];
+        return merged.sort((a, b) => new Date(a.start) - new Date(b.start));
+      });
+    } else {
+      setGcalEvents(events);
+    }
   }, []);
 
   useEffect(() => {
     if (!user) return;
-    loadCalendarEvents();
+    const initLoad = async () => {
+      await loadCalendarEvents(); // 抓當月
+      // 若本週（週一～週日）跨到下個月，也抓下個月
+      const today = new Date();
+      const dayOfWeek = today.getDay() === 0 ? 7 : today.getDay(); // 1=Mon..7=Sun
+      const weekEnd = new Date(today);
+      weekEnd.setDate(today.getDate() + (7 - dayOfWeek));
+      if (weekEnd.getMonth() !== today.getMonth() || weekEnd.getFullYear() !== today.getFullYear()) {
+        await loadCalendarEvents(weekEnd.getFullYear(), weekEnd.getMonth(), true);
+      }
+    };
+    initLoad();
     const interval = setInterval(() => loadCalendarEvents(), 40 * 60 * 1000);
     return () => clearInterval(interval);
   }, [user, loadCalendarEvents]);
@@ -1168,7 +1195,7 @@ export default function App() {
           <>
             <TodaySummary todos={todos} gcalEvents={getTodayGcalEvents(gcalEvents)} onToggle={handleCalToggle} />
             <WeekView todos={todos} gcalEvents={gcalEvents}
-              onWeekChange={(y, m) => loadCalendarEvents(y, m)}
+              onWeekChange={(y, m, merge) => loadCalendarEvents(y, m, merge)}
               onSelectDay={(ds, items, gcal) => { setCalSelected(ds); setCalItems(items); setCalGcalItems(gcal); }}
             />
             {calSelected && (
