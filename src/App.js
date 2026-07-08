@@ -29,6 +29,20 @@ function toDateStr(d) {
 const TODAY = () => toDateStr(new Date());
 function isOverdue(dl)  { return !!dl && dl < TODAY(); }
 function isDueToday(dl) { return !!dl && dl === TODAY(); }
+// 期間任務：在截止日之前的期間內，打勾只記錄「該日完成」（doneDates），截止日當天才是整個任務完成
+function togglesPerDay(t, ds) {
+  return !!ds && !!t.deadline && !!t.deadlineStart && t.deadlineStart < t.deadline
+    && ds >= t.deadlineStart && ds < t.deadline;
+}
+function toggleDateInList(t, ds) {
+  const dd = fixArr(t.doneDates);
+  return dd.includes(ds) ? dd.filter(x => x !== ds) : [...dd, ds];
+}
+function isDoneOnDate(t, ds) {
+  if (t.done) return true;
+  if (togglesPerDay(t, ds)) return fixArr(t.doneDates).includes(ds);
+  return false;
+}
 function deadlineColor(dl, done) {
   if (done) return { border: "#ede9e4", color: "#c0bab4" };
   if (isOverdue(dl))  return { border: "#d4a8a0", color: "#b07070" };
@@ -42,7 +56,11 @@ function fixArr(val) {
   return Object.values(val);
 }
 function fixItems(val) {
-  return fixArr(val).map(item => ({ ...item, subtasks: fixArr(item.subtasks) }));
+  return fixArr(val).map(item => ({
+    ...item,
+    doneDates: fixArr(item.doneDates),
+    subtasks: fixArr(item.subtasks).map(s => ({ ...s, doneDates: fixArr(s.doneDates) })),
+  }));
 }
 function toFirebase(todos) {
   const convert = items => {
@@ -161,32 +179,36 @@ function LoginScreen({ onLogin }) {
 }
 
 function TodaySummary({ todos, gcalEvents, onToggle }) {
-  const buildList = (filterFn) =>
+  const today = TODAY();
+  // keepDone=true：已完成也保留顯示（打勾樣式）
+  const buildList = (filterFn, keepDone) =>
     PERIOD_KEYS.flatMap(k =>
       todos[k].flatMap(i => {
         if (i.type === "project") {
           const results = [];
           const projDone = (i.subtasks||[]).length > 0 && (i.subtasks||[]).every(s => s.done);
-          if (filterFn(i.deadline) && !projDone)
+          if (filterFn(i) && (keepDone || !projDone))
             results.push({ ...i, _cat: k, _isProject: true, _subId: null });
           (i.subtasks||[]).forEach(s => {
-            if (filterFn(s.deadline) && !s.done)
+            if (filterFn(s) && (keepDone || !s.done))
               results.push({ ...s, _cat: k, _isProject: false, _parentId: i.id, _parentTitle: i.title, _subId: s.id });
           });
           return results;
         }
-        if (filterFn(i.deadline) && !i.done)
+        if (filterFn(i) && (keepDone || !i.done))
           return [{ ...i, _cat: k, _isProject: false, _subId: null }];
         return [];
       })
     );
 
   const [localTodayTodos, setLocalTodayTodos] = useState([]);
+  const [localOngoingTodos, setLocalOngoingTodos] = useState([]);
   const [localOverdueTodos, setLocalOverdueTodos] = useState([]);
 
   useEffect(() => {
-    setLocalTodayTodos(buildList(isDueToday));
-    setLocalOverdueTodos(buildList(isOverdue));
+    setLocalTodayTodos(buildList(t => isDueToday(t.deadline), true));
+    setLocalOngoingTodos(buildList(t => togglesPerDay(t, today), true));
+    setLocalOverdueTodos(buildList(t => isOverdue(t.deadline), false));
   }, [todos]);
 
   const handleToggle = (item) => {
@@ -195,19 +217,25 @@ function TodaySummary({ todos, gcalEvents, onToggle }) {
     const subId = item._subId;
     // optimistic local update
     const toggle = arr => arr.map(t => {
-      if (subId) return t._subId === subId ? { ...t, done: !t.done } : t;
-      return t.id === item.id && !t._subId ? { ...t, done: !t.done } : t;
+      const match = subId ? t._subId === subId : (t.id === item.id && !t._subId);
+      if (!match) return t;
+      return togglesPerDay(t, today)
+        ? { ...t, doneDates: toggleDateInList(t, today) }
+        : { ...t, done: !t.done };
     });
     setLocalTodayTodos(prev => toggle(prev));
+    setLocalOngoingTodos(prev => toggle(prev));
     setLocalOverdueTodos(prev => toggle(prev));
-    onToggle(cat, itemId, subId);
+    onToggle(cat, itemId, subId, today);
   };
 
   const renderItem = (t, idx, bgColor, textColor) => {
     const cat = MORANDI[t._cat] || MORANDI.work;
     const catLabel = PERIODS[PERIOD_KEYS.indexOf(t._cat)];
     const isSubtask = !!t._parentTitle;
-    const isDone = t.done || (t._isProject && (t.subtasks||[]).length > 0 && (t.subtasks||[]).every(s => s.done));
+    const isDone = t._isProject
+      ? (t.done || ((t.subtasks||[]).length > 0 && (t.subtasks||[]).every(s => s.done)))
+      : isDoneOnDate(t, today);
     const canCheck = !t._isProject || isSubtask;
     return (
       <div key={idx} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:6,
@@ -232,7 +260,7 @@ function TodaySummary({ todos, gcalEvents, onToggle }) {
     );
   };
 
-  if (gcalEvents.length === 0 && localTodayTodos.length === 0 && localOverdueTodos.length === 0) return null;
+  if (gcalEvents.length === 0 && localTodayTodos.length === 0 && localOngoingTodos.length === 0 && localOverdueTodos.length === 0) return null;
 
   return (
     <div style={{ background:"white", borderRadius:16, padding:14, marginBottom:14, border:"1.5px solid #deeae5", boxShadow:"0 2px 12px rgba(0,0,0,0.05)" }}>
@@ -257,9 +285,16 @@ function TodaySummary({ todos, gcalEvents, onToggle }) {
       )}
 
       {localTodayTodos.length > 0 && (
-        <div style={{ marginBottom: localOverdueTodos.length > 0 ? 8 : 0 }}>
+        <div style={{ marginBottom: (localOngoingTodos.length > 0 || localOverdueTodos.length > 0) ? 8 : 0 }}>
           <div style={{ fontSize:11, fontWeight:700, color:"#b8afa8", marginBottom:6, letterSpacing:"0.5px" }}>⏰ 截止任務</div>
           {localTodayTodos.map((t, idx) => renderItem(t, idx))}
+        </div>
+      )}
+
+      {localOngoingTodos.length > 0 && (
+        <div style={{ marginBottom: localOverdueTodos.length > 0 ? 8 : 0 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:"#b8afa8", marginBottom:6, letterSpacing:"0.5px" }}>🔁 進行中・今日打卡</div>
+          {localOngoingTodos.map((t, idx) => renderItem(t, idx))}
         </div>
       )}
 
@@ -359,11 +394,12 @@ function Calendar({ todos, activeKey, gcalEvents, onSelectDay, onMonthChange }) 
           const hasGcal = (gcalMap[ds] || []).length > 0;
           const isToday = ds === today;
           const isSel   = ds === selected;
-          const hasWork  = day?.work?.some(t => !t.done);
-          const hasStudy = day?.study?.some(t => !t.done);
-          const hasHouse = day?.house?.some(t => !t.done);
+          const dayDone  = t => t.done || ((t.subtasks||[]).length>0 && (t.subtasks||[]).every(s=>s.done)) || isDoneOnDate(t, ds);
+          const hasWork  = day?.work?.some(t => !dayDone(t));
+          const hasStudy = day?.study?.some(t => !dayDone(t));
+          const hasHouse = day?.house?.some(t => !dayDone(t));
           const hasAny   = day && Object.values(day).flat().length > 0;
-          const allDone  = hasAny && Object.values(day).flat().every(t => t.done || ((t.subtasks||[]).length>0 && (t.subtasks||[]).every(s=>s.done)));
+          const allDone  = hasAny && Object.values(day).flat().every(dayDone);
           return (
             <div key={i} onClick={() => handleDay(d)} style={{ textAlign:"center", padding:"6px 2px 8px", borderRadius:10, cursor:"pointer", background:isSel?accent.main:isToday?accent.light:"transparent", transition:"background 0.15s" }}>
               <span style={{ fontSize:13, fontWeight:isToday?700:400, color:isSel?"white":isToday?accent.text:"#4a4540" }}>{d}</span>
@@ -410,11 +446,13 @@ function DayDetail({ date, items, gcalItems, onToggle, onClose, onDeadlineChange
 
   const handleToggle = (cat, itemId, subId) => {
     setLocalItems(prev => prev.map(t => {
-      if (subId && t.id === subId && t._parentId) return { ...t, done: !t.done };
-      if (!subId && t.id === itemId && !t._parentId) return { ...t, done: !t.done };
-      return t;
+      const match = subId ? (t.id === subId && t._parentId) : (t.id === itemId && !t._parentId);
+      if (!match) return t;
+      return togglesPerDay(t, date)
+        ? { ...t, doneDates: toggleDateInList(t, date) }
+        : { ...t, done: !t.done };
     }));
-    onToggle(cat, itemId, subId);
+    onToggle(cat, itemId, subId, date);
   };
 
   const handleDeadline = (i, t, isSubtask, newDeadline, newDeadlineStart) => {
@@ -461,7 +499,10 @@ function DayDetail({ date, items, gcalItems, onToggle, onClose, onDeadlineChange
             const cat = MORANDI[t._category] || MORANDI.work;
             const catLabel = PERIODS[PERIOD_KEYS.indexOf(t._category)];
             const isSubtask = !!t._parentTitle;
-            const isDone = isSubtask ? t.done : t.type === "project" ? ((t.subtasks||[]).length > 0 && (t.subtasks||[]).every(s=>s.done)) : t.done;
+            const isDone = (t.type === "project" && !isSubtask)
+              ? ((t.subtasks||[]).length > 0 && (t.subtasks||[]).every(s=>s.done))
+              : isDoneOnDate(t, date);
+            const isDaily = togglesPerDay(t, date);
             const isEditingDl = editingDlIdx === i;
             const isFinalDay = !isDone && t.deadline === date;
             return (
@@ -473,8 +514,9 @@ function DayDetail({ date, items, gcalItems, onToggle, onClose, onDeadlineChange
                 <div style={{ display:"flex", alignItems:"center", gap:8 }}>
                   {(t.type !== "project" || isSubtask) && (
                     <button onClick={() => handleToggle(t._category, isSubtask ? t._parentId : t.id, isSubtask ? t.id : null)}
-                      style={{ width:18, height:18, borderRadius:5, border:`2px solid ${t.done?cat.main:"#cdc8c2"}`, background:t.done?cat.main:"white", cursor:"pointer", flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center" }}>
-                      {t.done && <svg width="9" height="9" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                      title={isDaily ? "打卡：只記錄這天完成" : undefined}
+                      style={{ width:18, height:18, borderRadius:5, border:`2px solid ${isDone?cat.main:"#cdc8c2"}`, background:isDone?cat.main:"white", cursor:"pointer", flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center" }}>
+                      {isDone && <svg width="9" height="9" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
                     </button>
                   )}
                   {t.type === "project" && !isSubtask && <span style={{ fontSize:13 }}>📁</span>}
@@ -483,6 +525,7 @@ function DayDetail({ date, items, gcalItems, onToggle, onClose, onDeadlineChange
                     {t.title || t.text}
                   </span>
                   <span style={{ fontSize:10, padding:"1px 6px", borderRadius:20, background:cat.light, color:cat.text, fontWeight:700 }}>{catLabel}</span>
+                  {isDaily && <span style={{ fontSize:10, padding:"1px 6px", borderRadius:20, background:"#e8ecf5", color:"#6b7a9e", fontWeight:700, flexShrink:0 }}>每日</span>}
                   {isFinalDay && <span style={{ fontSize:10, padding:"1px 6px", borderRadius:20, background:"#fee2e2", color:"#b07070", fontWeight:700, flexShrink:0 }}>今日截止</span>}
                   {!isDone && (
                     <button onClick={() => setEditingDlIdx(isEditingDl ? null : i)}
@@ -829,14 +872,14 @@ function WeekView({ todos, gcalEvents, onWeekChange, onSelectDay }) {
     (todos[k] || []).forEach(item => {
       if (item.type === "project") {
         const projDone = (item.subtasks || []).length > 0 && (item.subtasks || []).every(s => s.done);
-        if (item.deadline && !projDone)
-          addToTodosRange(item.deadline, item.deadlineStart, { ...item, _cat: k, _category: k });
+        if (item.deadline)
+          addToTodosRange(item.deadline, item.deadlineStart, { ...item, _cat: k, _category: k, _projDone: projDone });
         (item.subtasks || []).forEach(s => {
-          if (s.deadline && !s.done)
+          if (s.deadline)
             addToTodosRange(s.deadline, s.deadlineStart, { ...s, _cat: k, _category: k, _parentTitle: item.title, _parentId: item.id });
         });
       } else {
-        if (item.deadline && !item.done)
+        if (item.deadline)
           addToTodosRange(item.deadline, item.deadlineStart, { ...item, _cat: k, _category: k });
       }
     });
@@ -894,7 +937,8 @@ function WeekView({ todos, gcalEvents, onWeekChange, onSelectDay }) {
             {tasks.map((t, i) => {
               const cat = MORANDI[t._cat] || MORANDI.work;
               const catLabel = PERIODS[PERIOD_KEYS.indexOf(t._cat)];
-              const isFinalDay = t.deadline === ds;
+              const doneHere = t._projDone !== undefined ? t._projDone : isDoneOnDate(t, ds);
+              const isFinalDay = !doneHere && t.deadline === ds;
               return (
                 <div key={i} style={{ display:"flex", alignItems:"flex-start", gap:5, marginBottom:6,
                   background: isFinalDay ? "#fff5f5" : "transparent",
@@ -902,14 +946,16 @@ function WeekView({ todos, gcalEvents, onWeekChange, onSelectDay }) {
                   border: isFinalDay ? "1px solid #f0a0a0" : "none",
                   padding: isFinalDay ? "3px 5px" : 0,
                   margin: isFinalDay ? "0 -5px 6px" : "0 0 6px",
+                  opacity: doneHere ? 0.55 : 1,
                 }}>
-                  <div style={{ width:6, height:6, borderRadius:2, background: isFinalDay ? "#e05555" : cat.main, flexShrink:0, marginTop:3 }}/>
+                  <div style={{ width:6, height:6, borderRadius:2, background: doneHere ? "#c0bab4" : isFinalDay ? "#e05555" : cat.main, flexShrink:0, marginTop:3 }}/>
                   <div style={{ flex:1, minWidth:0 }}>
                     {t._parentTitle && <div style={{ fontSize:9, color:"#b8afa8", lineHeight:1.4 }}>{t._parentTitle} ›</div>}
-                    <div style={{ fontSize:12, color: isFinalDay ? "#b07070" : "#3a3530", fontWeight: isFinalDay ? 600 : 400, lineHeight:1.3, wordBreak:"break-word" }}>{t.title || t.text}</div>
+                    <div style={{ fontSize:12, color: doneHere ? "#b8afa8" : isFinalDay ? "#b07070" : "#3a3530", fontWeight: isFinalDay ? 600 : 400, textDecoration: doneHere ? "line-through" : "none", lineHeight:1.3, wordBreak:"break-word" }}>{t.title || t.text}</div>
                     <div style={{ display:"flex", gap:4, alignItems:"center", marginTop:1 }}>
                       <span style={{ fontSize:9, padding:"1px 5px", borderRadius:10, background:cat.light, color:cat.text, fontWeight:700 }}>{catLabel}</span>
                       {isFinalDay && <span style={{ fontSize:9, padding:"1px 5px", borderRadius:10, background:"#fee2e2", color:"#b07070", fontWeight:700 }}>今日截止</span>}
+                      {doneHere && <span style={{ fontSize:9, padding:"1px 5px", borderRadius:10, background:"#e5ede8", color:"#5e8a6e", fontWeight:700 }}>✓ 完成</span>}
                     </div>
                   </div>
                 </div>
@@ -1048,16 +1094,19 @@ export default function App() {
     signOut(auth);
   };
 
-  const handleCalToggle = (cat, itemId, subId) => {
+  const handleCalToggle = (cat, itemId, subId, date) => {
+    const toggleT = t => togglesPerDay(t, date)
+      ? { ...t, doneDates: toggleDateInList(t, date) }
+      : { ...t, done: !t.done };
     const list = todos[cat];
     const updated = list.map(item => {
       if (subId) {
         if (item.type === "project") {
-          return { ...item, subtasks: (item.subtasks||[]).map(s => s.id===subId ? {...s, done:!s.done} : s) };
+          return { ...item, subtasks: (item.subtasks||[]).map(s => s.id===subId ? toggleT(s) : s) };
         }
         return item;
       } else if (item.id === itemId) {
-        return { ...item, done: !item.done };
+        return toggleT(item);
       }
       return item;
     });
